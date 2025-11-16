@@ -1,4 +1,4 @@
-﻿"""
+"""
 Geometric MathValue types: Point, Vector, Matrix.
 
 These types represent geometric objects with specialized operations.
@@ -12,12 +12,13 @@ import math
 from typing import Any, Iterable
 
 import numpy as np
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .numeric import Real
 from .value import MathValue, ToleranceMode, TypePrecedence
 
 
-class Point(MathValue):
+class Point(BaseModel, MathValue):
     """
     Point in n-dimensional space.
 
@@ -27,80 +28,115 @@ class Point(MathValue):
     Reference: lib/Value/Point.pm
     """
 
-    type_precedence = TypePrecedence.POINT
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
-    def __init__(self, *args, context: Any = None):
-        """
-        Initialize a Point.
+    coordinates: list[MathValue] = Field(default_factory=list)
+    context: Any | None = None
+    type_precedence: TypePrecedence = Field(default=TypePrecedence.POINT, init=False)
 
-        Args:
-            *args: Variable number of coordinates, or a single list/tuple of coordinates,
-                   or a string to parse (e.g., Point("(1, 0)"))
-                   Point(1, 2, 3) or Point([1, 2, 3]) both work
-            context: Mathematical context (for parsing string input)
+    def __init__(
+        self,
+        *args: Any,
+        context: Any | None = None,
+        coordinates: list[Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize a Point supporting legacy call patterns."""
+        processed_context = context
+        if coordinates is not None and args:
+            raise ValueError("Point accepts either coordinates or positional arguments, not both")
 
-        Reference: lib/Value/Point.pm::new (lines 19-47)
-        """
-        # Convert to MathValue if needed
+        if coordinates is not None:
+            processed_coords = self._coerce_coordinate_values(coordinates)
+        else:
+            processed_coords, processed_context = self._parse_arguments(args, processed_context)
+
+        super().__init__(coordinates=processed_coords, context=processed_context, **kwargs)
+
+    @staticmethod
+    def _coerce_coordinate_values(raw_coords: Iterable[Any]) -> list[MathValue]:
+        """Convert Python/native coordinates into MathValue instances."""
         from .value import MathValue as MV
 
-        # Handle string input (like Perl's Value::makeValue)
-        # Reference: lib/Value/Point.pm:25 - $p = Value::makeValue($p, context => $context) if defined($p) && !ref($p);
-        if len(args) == 1 and isinstance(args[0], str):
-            # Parse string input using Compute (equivalent to makeValue)
-            if context is None:
-                from .context import get_current_context
-                context = get_current_context()
+        return [coord if isinstance(coord, MathValue) else MV.from_python(coord) for coord in raw_coords]
 
-            from .compute import Compute
-            parsed = Compute(args[0], context)
+    @classmethod
+    def _parse_arguments(
+        cls,
+        args: tuple[Any, ...],
+        context: Any | None,
+    ) -> tuple[list[MathValue], Any | None]:
+        """Parse positional constructor arguments."""
+        if len(args) == 0:
+            return cls._coerce_coordinate_values([]), context
 
-            # Extract coordinates from parsed result
-            # Handle different return types from Compute
-            coords: list[Any] = []
-            if isinstance(parsed, Point):
-                # Already a Point - use its coordinates
-                self.coords = list(parsed.coords)
-                return
-            elif isinstance(parsed, (list, tuple)):
-                # List/tuple of coordinates
-                coords = list(parsed)
-            elif hasattr(parsed, 'coords'):
-                # Has coords attribute (Vector, etc.)
-                coords = list(parsed.coords)
-            elif hasattr(parsed, 'to_python'):
-                # Try to convert to Python and extract coordinates
-                py_val = parsed.to_python()
-                if isinstance(py_val, (list, tuple)):
-                    coords = list(py_val)
-                elif isinstance(py_val, str):
-                    # Try parsing the string representation
-                    # Handle "(1, 0)" format
-                    import re
-                    match = re.match(r'\(([^)]+)\)', py_val.strip())
-                    if match:
-                        coords_str = match.group(1)
-                        coords = [c.strip() for c in coords_str.split(',')]
-                    else:
-                        coords = [parsed]
-                else:
-                    coords = [parsed]
-            else:
-                # Single value - wrap in list
-                coords = [parsed]
+        if len(args) == 1:
+            single = args[0]
+            if isinstance(single, str):
+                coords, resolved_context = cls._parse_string_literal(single, context)
+                return cls._coerce_coordinate_values(coords), resolved_context
+            if isinstance(single, (list, tuple)):
+                return cls._coerce_coordinate_values(list(single)), context
 
-            self.coords = [MV.from_python(c) if not isinstance(
-                c, MathValue) else c for c in coords]
-            return
+        return cls._coerce_coordinate_values(list(args)), context
 
-        # Handle both Point(x, y, z) and Point([x, y, z]) calling styles
-        if len(args) == 1 and isinstance(args[0], (list, tuple)):
-            coords = list(args[0])
-        else:
-            coords = list(args)
+    @classmethod
+    def _parse_string_literal(
+        cls,
+        literal: str,
+        context: Any | None,
+    ) -> tuple[list[Any], Any | None]:
+        """Parse string literal input using Compute to match Perl behavior."""
+        if context is None:
+            from .context import get_current_context
 
-        self.coords = [MV.from_python(c) if not isinstance(
-            c, MathValue) else c for c in coords]
+            context = get_current_context()
+
+        from .compute import Compute
+
+        parsed = Compute(literal, context)
+        coords = cls._extract_coordinates(parsed)
+        return coords, context
+
+    @staticmethod
+    def _extract_coordinates(parsed: Any) -> list[Any]:
+        """Extract coordinate sequence from parsed objects."""
+        if isinstance(parsed, Point):
+            return list(parsed.coords)
+        if isinstance(parsed, (list, tuple)):
+            return list(parsed)
+        if hasattr(parsed, 'coords'):
+            return list(parsed.coords)
+        if hasattr(parsed, 'to_python'):
+            py_val = parsed.to_python()
+            if isinstance(py_val, (list, tuple)):
+                return list(py_val)
+            if isinstance(py_val, str):
+                import re
+
+                match = re.match(r'\(([^)]+)\)', py_val.strip())
+                if match:
+                    coords_str = match.group(1)
+                    return [c.strip() for c in coords_str.split(',')]
+                return [parsed]
+            return [py_val]
+        return [parsed]
+
+    @property
+    def coords(self) -> list[MathValue]:
+        """Backward-compatible coords accessor."""
+        return self.coordinates
+
+    @coords.setter
+    def coords(self, value: Iterable[Any]) -> None:
+        self.coordinates = self._coerce_coordinate_values(list(value))
+
+    @field_validator("coordinates", mode="before")
+    @classmethod
+    def _validate_coordinates(cls, value):
+        if value is None:
+            return []
+        return cls._coerce_coordinate_values(value if isinstance(value, (list, tuple)) else list(value))
 
     def promote(self, other: MathValue) -> MathValue:
         """Points don't promote to other types."""
@@ -253,7 +289,7 @@ class Point(MathValue):
         return Real(math.sqrt(sum_sq))
 
 
-class Vector(MathValue):
+class Vector(BaseModel, MathValue):
     """
     Vector in n-dimensional space.
 
@@ -262,37 +298,67 @@ class Vector(MathValue):
     Reference: lib/Value/Vector.pm
     """
 
-    type_precedence = TypePrecedence.VECTOR
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
-    def __init__(self, *args, context: Any | None = None):
-        """
-        Initialize a Vector.
+    components: list[MathValue] = Field(default_factory=list)
+    context: Any | None = None
+    type_precedence: TypePrecedence = Field(default=TypePrecedence.VECTOR, init=False)
 
-        Args:
-            *args: Components, vector literal, or iterable of components
-            context: Optional context for parsing string literals
-        """
+    def __init__(
+        self,
+        *args: Any,
+        context: Any | None = None,
+        components: list[Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize a Vector supporting legacy construction patterns."""
+        if components is not None and args:
+            raise ValueError("Vector accepts either components or positional arguments, not both")
+
+        if components is not None:
+            parsed_components = self._coerce_components(components)
+            resolved_context = context
+        else:
+            parsed_components, resolved_context = self._parse_arguments(args, context)
+
+        super().__init__(components=parsed_components, context=resolved_context, **kwargs)
+
+    @staticmethod
+    def _coerce_components(raw_components: Iterable[Any]) -> list[MathValue]:
+        """Convert raw component values into MathValue instances."""
         from .value import MathValue as MV
 
-        if len(args) == 1 and isinstance(args[0], (list, tuple)):
-            raw_components = list(args[0])
-        else:
-            raw_components = list(args)
+        return [comp if isinstance(comp, MathValue) else MV.from_python(comp) for comp in raw_components]
 
-        if len(raw_components) == 1:
-            literal = raw_components[0]
-            if isinstance(literal, str):
-                raw_components = self._parse_vector_literal(literal, context)
-            elif isinstance(literal, MathValue) and hasattr(literal, 'to_string'):
-                raw_components = self._parse_vector_literal(
-                    literal.to_string(), context
-                )
+    @classmethod
+    def _parse_arguments(
+        cls,
+        args: tuple[Any, ...],
+        context: Any | None,
+    ) -> tuple[list[MathValue], Any | None]:
+        """Parse constructor arguments into vector components."""
+        if len(args) == 0:
+            return cls._coerce_components([]), context
 
-        self.components = [
-            literal if isinstance(
-                literal, MathValue) else MV.from_python(literal)
-            for literal in raw_components
-        ]
+        if len(args) == 1:
+            single = args[0]
+            if isinstance(single, str):
+                literal_components = cls._parse_vector_literal(single, context)
+                return cls._coerce_components(literal_components), context
+            if isinstance(single, (list, tuple)):
+                return cls._coerce_components(list(single)), context
+            if isinstance(single, MathValue) and hasattr(single, 'to_string'):
+                literal_components = cls._parse_vector_literal(single.to_string(), context)
+                return cls._coerce_components(literal_components), context
+
+        return cls._coerce_components(list(args)), context
+
+    @field_validator("components", mode="before")
+    @classmethod
+    def _validate_components(cls, value):
+        if value is None:
+            return []
+        return cls._coerce_components(value if isinstance(value, (list, tuple)) else list(value))
 
     def promote(self, other: MathValue) -> MathValue:
         """Vectors don't promote to other types."""
@@ -495,6 +561,7 @@ class Vector(MathValue):
         raise AttributeError(f"'Vector' object has no attribute '{name}'")
 
     @staticmethod
+    @staticmethod
     def _parse_vector_literal(expr: str, context: Any | None) -> list[Any]:
         expr = expr.strip()
         if not (expr.startswith('<') and expr.endswith('>')):
@@ -640,7 +707,7 @@ class Vector(MathValue):
         return self.norm()
 
 
-class Matrix(MathValue):
+class Matrix(BaseModel, MathValue):
     """
     Matrix (2D array) with matrix operations.
 
@@ -649,28 +716,56 @@ class Matrix(MathValue):
     Reference: lib/Value/Matrix.pm
     """
 
-    type_precedence = TypePrecedence.MATRIX
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
-    def __init__(self, rows: list[list[MathValue]] | list[list[float]]):
-        """
-        Initialize a Matrix.
+    rows: list[list[MathValue]] = Field(default_factory=list)
+    context: Any | None = None
+    type_precedence: TypePrecedence = Field(default=TypePrecedence.MATRIX, init=False)
 
-        Args:
-            rows: List of rows, each row is a list of elements
-        """
+    def __init__(
+        self,
+        rows: Iterable[Iterable[Any]] | np.ndarray,
+        context: Any | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize a Matrix ensuring rectangular structure."""
+        processed_rows = self._coerce_rows(rows)
+        super().__init__(rows=processed_rows, context=context, **kwargs)
+
+    @staticmethod
+    def _coerce_rows(raw_rows: Any) -> list[list[MathValue]]:
+        """Convert raw row iterables into MathValue rows."""
         from .value import MathValue as MV
 
-        self.rows = [
-            [MV.from_python(el) if not isinstance(
-                el, MathValue) else el for el in row]
-            for row in rows
-        ]
+        if isinstance(raw_rows, Matrix):
+            return [[cell for cell in row] for row in raw_rows.rows]
 
-        # Validate rectangular
-        if len(self.rows) > 0:
-            row_len = len(self.rows[0])
-            if not all(len(row) == row_len for row in self.rows):
+        if isinstance(raw_rows, np.ndarray):
+            raw_rows = raw_rows.tolist()
+
+        if not isinstance(raw_rows, Iterable):
+            raise TypeError("Matrix rows must be iterable sequences")
+
+        normalized: list[list[MathValue]] = []
+        for row in raw_rows:
+            if isinstance(row, np.ndarray):
+                row = row.tolist()
+            if not isinstance(row, Iterable):
+                raise TypeError("Matrix rows must be iterable sequences")
+            normalized.append([cell if isinstance(cell, MathValue) else MV.from_python(cell) for cell in row])
+
+        if normalized:
+            row_len = len(normalized[0])
+            if not all(len(row) == row_len for row in normalized):
                 raise ValueError("Matrix rows must all have same length")
+        return normalized
+
+    @field_validator("rows", mode="before")
+    @classmethod
+    def _validate_rows(cls, value):
+        if value is None:
+            return []
+        return cls._coerce_rows(value)
 
     def promote(self, other: MathValue) -> MathValue:
         """Matrices don't promote."""
@@ -1009,3 +1104,4 @@ def norm(obj: Vector | Point) -> Real:
         return obj.norm()
     else:
         raise TypeError(f"norm() requires a Vector or Point, got {type(obj)}")
+

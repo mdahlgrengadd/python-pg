@@ -8,13 +8,16 @@ Reference: lib/Value/Interval.pm, lib/Value/Set.pm, lib/Value/Union.pm
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .numeric import Infinity, Real
 from .value import MathValue, ToleranceMode, TypePrecedence
 
 
-class Interval(MathValue):
+
+class Interval(BaseModel, MathValue):
     """
     Mathematical interval with open/closed endpoints.
 
@@ -27,89 +30,95 @@ class Interval(MathValue):
     Reference: lib/Value/Interval.pm
     """
 
-    type_precedence = TypePrecedence.INTERVAL
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
-    def __init__(self, *args):
-        """
-        Initialize an Interval.
+    left: MathValue
+    right: MathValue
+    open_left: bool = True
+    open_right: bool = True
+    context: Any | None = None
+    type_precedence: TypePrecedence = Field(default=TypePrecedence.INTERVAL, init=False)
 
-        Supports Perl-style constructor syntax:
-        - Interval('[', 1, 5, ']') - with bracket arguments
-        - Interval(1, 5) - defaults to open on both sides
-        - Interval(1, 5, False, True) - with boolean open_left, open_right
+    def __init__(
+        self,
+        *args: Any,
+        left: Any | None = None,
+        right: Any | None = None,
+        open_left: bool | None = None,
+        open_right: bool | None = None,
+        context: Any | None = None,
+        **kwargs: Any,
+    ) -> None:
+        resolved_context = context
+        if args:
+            parsed_left, parsed_right, parsed_open_left, parsed_open_right = self._parse_arguments(args)
+            left = parsed_left
+            right = parsed_right
+            if open_left is None:
+                open_left = parsed_open_left
+            if open_right is None:
+                open_right = parsed_open_right
 
-        Args:
-            args: Variable arguments:
-                - 4 args: open_bracket, left, right, close_bracket
-                - 2 args: left, right (both open)
-                - 4 args (last 2 bool): left, right, open_left, open_right
+        if left is None or right is None:
+            raise ValueError('Interval requires left and right endpoints')
 
-        Reference: lib/Value/Interval.pm::new
-        """
+        open_left_value = True if open_left is None else bool(open_left)
+        open_right_value = True if open_right is None else bool(open_right)
+
+        super().__init__(
+            left=self._coerce_endpoint(left),
+            right=self._coerce_endpoint(right),
+            open_left=open_left_value,
+            open_right=open_right_value,
+            context=resolved_context,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _coerce_endpoint(value: Any) -> MathValue:
         from .value import MathValue as MV
 
-        # Parse arguments based on count and type
+        endpoint = value if isinstance(value, MathValue) else MV.from_python(value)
+        if not isinstance(endpoint, (Real, Infinity)):
+            raise TypeError('Interval endpoints must be Real or Infinity')
+        return endpoint
+
+    @classmethod
+    def _parse_arguments(cls, args: tuple[Any, ...]) -> tuple[Any, Any, bool, bool]:
         if len(args) == 1 and isinstance(args[0], str):
-            # String notation: "(0,5)" or "[2,7]"
-            import re
-            s = args[0].strip()
+            return cls._parse_string_literal(args[0])
+        if len(args) == 4:
+            first, second, third, fourth = args
+            if isinstance(first, str) and isinstance(fourth, str):
+                return second, third, first == '(', fourth == ')'
+            if isinstance(third, bool) and isinstance(fourth, bool):
+                return first, second, third, fourth
+            raise ValueError('Invalid Interval constructor arguments')
+        if len(args) == 2:
+            return args[0], args[1], True, True
+        raise ValueError(f'Interval requires 2 or 4 arguments, got {len(args)}')
 
-            # Match pattern: opening bracket, number, comma, number, closing bracket
-            match = re.match(
-                r'^([\(\[])(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)([\)\]])$', s)
-            if not match:
-                raise ValueError(f"Invalid interval string notation: {s}")
+    @staticmethod
+    def _parse_string_literal(literal: str) -> tuple[Any, Any, bool, bool]:
+        import re
 
-            open_bracket = match.group(1)
-            left_val = float(match.group(2))
-            right_val = float(match.group(3))
-            close_bracket = match.group(4)
+        s = literal.strip()
+        match = re.match(r'^([\(\[])(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)([\)\]])$', s)
+        if not match:
+            raise ValueError(f'Invalid interval string notation: {literal}')
 
-            open_left = (open_bracket == '(')
-            open_right = (close_bracket == ')')
-        elif len(args) == 4:
-            # Check if first and last args are bracket strings
-            if isinstance(args[0], str) and isinstance(args[3], str):
-                # Perl-style: Interval('[', 1, 5, ']')
-                open_bracket = args[0]
-                left_val = args[1]
-                right_val = args[2]
-                close_bracket = args[3]
+        open_bracket, left_val, right_val, close_bracket = match.groups()
+        return float(left_val), float(right_val), open_bracket == '(', close_bracket == ')'
 
-                # Convert brackets to boolean flags
-                open_left = (open_bracket == '(')
-                open_right = (close_bracket == ')')
-            elif isinstance(args[2], bool) and isinstance(args[3], bool):
-                # Python-style: Interval(1, 5, False, True)
-                left_val = args[0]
-                right_val = args[1]
-                open_left = args[2]
-                open_right = args[3]
-            else:
-                raise ValueError("Invalid Interval constructor arguments")
-        elif len(args) == 2:
-            # Interval(1, 5) - defaults to open on both sides
-            left_val = args[0]
-            right_val = args[1]
-            open_left = True
-            open_right = True
-        else:
-            raise ValueError(
-                f"Interval requires 2 or 4 arguments, got {len(args)}")
+    @field_validator('left', 'right', mode='before')
+    @classmethod
+    def _validate_endpoint_field(cls, value: Any) -> MathValue:
+        return cls._coerce_endpoint(value)
 
-        # Convert to MathValue
-        self.left = MV.from_python(left_val) if not isinstance(
-            left_val, MathValue) else left_val
-        self.right = MV.from_python(right_val) if not isinstance(
-            right_val, MathValue) else right_val
-        self.open_left = open_left
-        self.open_right = open_right
-
-        # Validate interval
-        if not isinstance(self.left, (Real, Infinity)) or not isinstance(
-            self.right, (Real, Infinity)
-        ):
-            raise TypeError("Interval endpoints must be Real or Infinity")
+    @field_validator('open_left', 'open_right', mode='before')
+    @classmethod
+    def _validate_open_flag(cls, value: Any) -> bool:
+        return bool(value)
 
     def promote(self, other: MathValue) -> MathValue:
         """Intervals don't promote to other types."""
@@ -413,7 +422,8 @@ class Interval(MathValue):
         raise TypeError("Interval does not support absolute value")
 
 
-class Set(MathValue):
+
+class Set(BaseModel, MathValue):
     """
     Finite set of elements.
 
@@ -424,35 +434,36 @@ class Set(MathValue):
     Reference: lib/Value/Set.pm
     """
 
-    type_precedence = TypePrecedence.SET
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
-    def __init__(self, elements: list[MathValue] | list[float]):
-        """
-        Initialize a Set.
+    elements: list[MathValue] = Field(default_factory=list)
+    context: Any | None = None
+    type_precedence: TypePrecedence = Field(default=TypePrecedence.SET, init=False)
 
-        Args:
-            elements: List of elements (duplicates will be removed)
-        """
+    def __init__(self, elements: Iterable[Any] | None = None, context: Any | None = None, **kwargs: Any) -> None:
+        processed = self._deduplicate(self._coerce_elements(elements or []))
+        super().__init__(elements=processed, context=context, **kwargs)
+
+    @staticmethod
+    def _coerce_elements(raw_elements: Iterable[Any]) -> list[MathValue]:
         from .value import MathValue as MV
 
-        # Convert to MathValue and remove duplicates
-        converted = [MV.from_python(e) if not isinstance(
-            e, MathValue) else e for e in elements]
+        return [elem if isinstance(elem, MathValue) else MV.from_python(elem) for elem in raw_elements]
 
-        # Remove duplicates (using Python set with tuple conversion for hashability)
-        unique = []
-        seen = []
-        for elem in converted:
-            is_duplicate = False
-            for seen_elem in seen:
-                if elem.compare(seen_elem):
-                    is_duplicate = True
-                    break
-            if not is_duplicate:
+    @classmethod
+    def _deduplicate(cls, elements: list[MathValue]) -> list[MathValue]:
+        unique: list[MathValue] = []
+        for elem in elements:
+            if not any(elem.compare(existing) for existing in unique):
                 unique.append(elem)
-                seen.append(elem)
+        return unique
 
-        self.elements = unique
+    @field_validator('elements', mode='before')
+    @classmethod
+    def _validate_elements(cls, value: Iterable[Any] | None) -> list[MathValue]:
+        if value is None:
+            return []
+        return cls._deduplicate(cls._coerce_elements(value))
 
     def promote(self, other: MathValue) -> MathValue:
         """Sets don't promote."""
@@ -644,47 +655,66 @@ class Set(MathValue):
         raise TypeError("Set does not support absolute value")
 
 
-class Union(MathValue):
+
+class Union(BaseModel, MathValue):
     """
     Union of intervals and/or sets.
 
     Examples:
-    - [0, 1] ∪ [2, 3]
-    - (-inf, 0] ∪ [1, inf)
+    - [0, 1] U [2, 3]
+    - (-inf, 0] U [1, inf)
 
     Reference: lib/Value/Union.pm
     """
 
-    type_precedence = TypePrecedence.UNION
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
-    def __init__(self, sets: list[Interval | Set] | str):
-        """
-        Initialize a Union.
+    sets: list[Interval | Set] = Field(default_factory=list)
+    context: Any | None = None
+    type_precedence: TypePrecedence = Field(default=TypePrecedence.UNION, init=False)
 
-        Args:
-            sets: List of Intervals and/or Sets, or string notation like "(0,2) U [5,7]"
-        """
-        # Handle string notation
-        if isinstance(sets, str):
+    def __init__(
+        self,
+        sets: list[Interval | Set] | str | None = None,
+        context: Any | None = None,
+        **kwargs: Any,
+    ) -> None:
+        parsed_sets = self._parse_sets_input(sets)
+        super().__init__(sets=parsed_sets, context=context, **kwargs)
+        self._simplify()
+
+    @staticmethod
+    def _parse_sets_input(raw_sets: list[Interval | Set] | str | None) -> list[Interval | Set]:
+        if raw_sets is None:
+            return []
+
+        if isinstance(raw_sets, str):
             import re
-            # Split by 'U' or 'u' (union symbol)
-            parts = re.split(r'\s*[Uu]\s*', sets.strip())
-            parsed_sets = []
+
+            parts = re.split(r"\s*[Uu]\s*", raw_sets.strip())
+            parsed: list[Interval | Set] = []
             for part in parts:
                 part = part.strip()
-                # Try to parse each part as an Interval
+                if not part:
+                    continue
                 try:
-                    parsed_sets.append(Interval(part))
+                    parsed.append(Interval(part))
                 except (ValueError, TypeError):
-                    # If not an interval, might be a set - skip for now
-                    pass
-            sets = parsed_sets
+                    parsed.append(Set([part]))
+            return parsed
 
-        if not all(isinstance(s, (Interval, Set)) for s in sets):
-            raise TypeError("Union elements must be Intervals or Sets")
+        if not isinstance(raw_sets, list):
+            raw_sets = list(raw_sets)
 
-        self.sets = sets
-        self._simplify()
+        for item in raw_sets:
+            if not isinstance(item, (Interval, Set)):
+                raise TypeError('Union elements must be Intervals or Sets')
+        return list(raw_sets)
+
+    @field_validator('sets', mode='before')
+    @classmethod
+    def _validate_sets(cls, value: list[Interval | Set] | str | None) -> list[Interval | Set]:
+        return cls._parse_sets_input(value)
 
     def _simplify(self) -> None:
         """Simplify the union by merging overlapping intervals."""
