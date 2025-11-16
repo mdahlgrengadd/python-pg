@@ -12,6 +12,8 @@ import ast
 import math
 from typing import Any
 
+from pydantic import BaseModel, Field, field_validator, ConfigDict
+
 from .value import MathValue, ToleranceMode, TypePrecedence
 
 
@@ -93,7 +95,7 @@ def _safe_eval_math_expression(expr: str) -> float:
         raise ValueError(f"Could not evaluate expression '{expr}': {e}") from e
 
 
-class Real(MathValue):
+class Real(BaseModel, MathValue):
     """
     Real number value.
 
@@ -103,9 +105,13 @@ class Real(MathValue):
     Reference: lib/Value/Real.pm
     """
 
-    type_precedence = TypePrecedence.REAL
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    def __init__(self, value: float | int | str, context=None):
+    value: float = Field(description="The numeric value")
+    context: Any = Field(default=None, description="The evaluation context")
+    type_precedence: TypePrecedence = Field(default=TypePrecedence.REAL, init=False)
+
+    def __init__(self, value: float | int | str, context=None, **kwargs):
         """
         Initialize a Real number.
 
@@ -117,19 +123,19 @@ class Real(MathValue):
         if isinstance(value, str):
             try:
                 # Try to evaluate as a simple number first
-                self.value = float(value)
+                float_value = float(value)
             except (ValueError, SyntaxError):
                 # Try to evaluate as a mathematical expression using safe parser
-                self.value = _safe_eval_math_expression(value)
+                float_value = _safe_eval_math_expression(value)
         else:
-            self.value = float(value)
+            float_value = float(value)
 
-        if context is not None:
-            self.context = context
-        else:
+        if context is None:
             # Import here to avoid circular dependency
             from .context import get_current_context
-            self.context = get_current_context()
+            context = get_current_context()
+
+        super().__init__(value=float_value, context=context, **kwargs)
 
     def promote(self, other: MathValue) -> MathValue:
         """Promote Real to another type."""
@@ -234,6 +240,10 @@ class Real(MathValue):
     def to_python(self) -> float:
         """Convert to Python float."""
         return self.value
+
+    def __str__(self) -> str:
+        """String representation (for str() builtin)."""
+        return self.to_string()
 
     def __float__(self) -> float:
         """Convert to Python float (for float() builtin)."""
