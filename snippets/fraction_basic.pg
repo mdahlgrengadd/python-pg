@@ -1,0 +1,20 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "MathObjects.pl", "contextFraction.pl");
+TEXT(beginproblem());
+
+Context("Fraction");
+
+# Basic fraction tests
+$f1 = Compute("3/4");
+$f2 = Compute("6/8");  # Should reduce to 3/4
+$f3 = Compute("-5/7");
+$f4 = Compute("12/18"); # Should reduce to 2/3
+
+BEGIN_TEXT
+Fraction 1: \($f1\)$BR
+Fraction 2: \($f2\)$BR
+Fraction 3: \($f3\)$BR
+Fraction 4: \($f4\)$BR
+END_TEXT
+
+ENDDOCUMENT();

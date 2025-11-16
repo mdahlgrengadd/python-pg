@@ -1,0 +1,18 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "MathObjects.pl");
+TEXT(beginproblem());
+
+Context("Numeric");
+
+# Test random number generation
+$a = random(1, 10, 1);
+$b = non_zero_random(-5, 5, 1);
+$c = list_random(2, 4, 6, 8);
+
+BEGIN_TEXT
+Random number between 1 and 10: $a$BR
+Non-zero random between -5 and 5: $b$BR
+List random from [2,4,6,8]: $c$BR
+END_TEXT
+
+ENDDOCUMENT();

@@ -1,0 +1,21 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "MathObjects.pl", "AnswerFormatHelp.pl");
+TEXT(beginproblem());
+
+Context("Numeric");
+$ans = Compute("x^2 + 3*x + 2");
+
+BEGIN_TEXT
+Enter a formula: \{ans_rule(20)\}
+\{AnswerFormatHelp("formulas")\}
+$BR
+$BR
+Enter a number: \{ans_rule(10)\}
+\{AnswerFormatHelp("numbers")\}
+END_TEXT
+
+ANS($ans->cmp());
+ANS(Real(5)->cmp());
+
+ENDDOCUMENT();
+

@@ -1,0 +1,16 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "PGcourse.pl");
+TEXT(beginproblem());
+
+# PGcourse.pl is typically empty or contains course-specific settings
+# This test verifies it can be loaded without error
+
+$a = random(1, 10, 1);
+
+BEGIN_TEXT
+PGcourse.pl loaded successfully.$BR
+Random value: $a$BR
+END_TEXT
+
+ENDDOCUMENT();
+

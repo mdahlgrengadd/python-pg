@@ -1,0 +1,28 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "PGML.pl");
+TEXT(beginproblem());
+
+BEGIN_PGML
+# Main Heading
+
+This is a paragraph with *bold text* and _italic text_.
+
+## Subheading
+
+Here's a list:
+* Item 1
+* Item 2
+* Item 3
+
+And a numbered list:
+1. First
+2. Second
+3. Third
+
+---
+
+Horizontal rule above.
+END_PGML
+
+ENDDOCUMENT();
+

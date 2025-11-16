@@ -1,0 +1,18 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "MathObjects.pl", "parserPopUp.pl");
+TEXT(beginproblem());
+
+$popup = PopUp(
+  ["Choose one", "Increasing", "Decreasing", "Constant"],
+  "Increasing"
+);
+
+BEGIN_TEXT
+What is the behavior of the function \(f(x) = x^2\) for \(x > 0\)?
+$BR
+\{$popup->menu()\}
+END_TEXT
+
+ANS($popup->cmp());
+
+ENDDOCUMENT();

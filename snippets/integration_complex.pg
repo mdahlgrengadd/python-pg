@@ -1,0 +1,38 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "MathObjects.pl", "PGML.pl", "parserPopUp.pl");
+TEXT(beginproblem());
+
+Context("Numeric");
+$a = random(2, 5, 1);
+$b = random(1, 4, 1);
+$c = $a + $b;
+
+$ans1 = Compute("$c");
+$ans2 = Compute("$a * x + $b");
+
+$popup = PopUp(
+    ["Choose one", "Linear", "Quadratic", "Exponential"],
+    "Linear"
+);
+
+BEGIN_PGML
+## Complex Integration Test
+
+Given: [`a = [$a]`] and [`b = [$b]`]
+
+1. What is [`a + b`]? [_____]{$ans1}
+
+2. What is the function [`f(x) = ax + b`]? [__________]{$ans2}
+
+3. What type of function is this? [_]{$popup}
+
+### Solution
+
+When [`a = [$a]`] and [`b = [$b]`]:
+- Sum: [`[$a] + [$b] = [$c]`]
+- Function: [`f(x) = [$a]x + [$b]`]
+- Type: Linear (degree 1 polynomial)
+END_PGML
+
+ENDDOCUMENT();
+

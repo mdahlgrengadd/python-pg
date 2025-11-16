@@ -1,0 +1,28 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "MathObjects.pl");
+TEXT(beginproblem());
+
+Context("Vector");
+
+$p = Point(1, 2, 3);
+$v = Vector(4, 5, 6);
+$u = Vector(1, 0, 0);
+
+$dot = $v . $u;
+$norm = norm($v);
+
+BEGIN_TEXT
+Point: \($p\)$BR
+Vector v: \($v\)$BR
+Vector u: \($u\)$BR
+$BR
+Dot product v·u: \($dot\)$BR
+Norm of v: \($norm\)$BR
+$BR
+Enter vector <1,2,3>: \{ans_rule(20)\}$BR
+END_TEXT
+
+ANS(Vector(1,2,3)->cmp());
+
+ENDDOCUMENT();
+

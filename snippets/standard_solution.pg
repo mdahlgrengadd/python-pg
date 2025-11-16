@@ -1,0 +1,27 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "MathObjects.pl");
+TEXT(beginproblem());
+
+Context("Numeric");
+$a = random(2, 5, 1);
+$b = random(2, 5, 1);
+$answer = Compute("$a * $b");
+
+BEGIN_TEXT
+Multiply \($a \times $b\):$BR
+\{ans_rule(10)\}
+END_TEXT
+
+ANS($answer->cmp());
+
+BEGIN_SOLUTION
+To multiply \($a\) by \($b\), we get:$BR
+\[$a \times $b = $answer\]
+END_SOLUTION
+
+BEGIN_HINT
+Remember to multiply the numbers together.
+END_HINT
+
+ENDDOCUMENT();
+

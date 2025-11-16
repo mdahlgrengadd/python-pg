@@ -1,0 +1,19 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "MathObjects.pl", "PGML.pl");
+TEXT(beginproblem());
+
+Context("Numeric");
+$a = random(2, 9, 1);
+$b = random(2, 9, 1);
+$ans = Compute("$a * $b");
+
+BEGIN_PGML
+Compute [`[$a] \times [$b]`].
+
+Answer: [_____]{$ans}
+
+## Explanation
+When you multiply [$a] by [$b], you get [`[$ans]`].
+END_PGML
+
+ENDDOCUMENT();
