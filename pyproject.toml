@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "WeBWorK Problem Generation System"
 requires-python = ">=3.10"
 dependencies = [
+    "lark>=1.1.0",
     "numpy>=1.24",
+    "pygments>=2.15.0",
     "pyyaml>=6.0",
     "RestrictedPython>=6.0",
     "sympy>=1.12",

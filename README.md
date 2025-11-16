@@ -26,20 +26,25 @@ This repository contains a standalone Python implementation of the PG system, ex
 git clone <repository-url>
 cd python-pg
 
-# Install in development mode
-pip install -e .
-
-# Or install with development dependencies
+# Install in development mode (recommended for development)
+# This includes all dependencies including dev tools
 pip install -e ".[dev]"
+
+# Or install without dev dependencies (for production use)
+pip install -e .
 ```
+
+**Note**: For development, it's recommended to install with `[dev]` to get testing and linting tools.
 
 ### Dependencies
 
 The package requires:
-- `numpy>=1.24`
-- `pyyaml>=6.0`
-- `RestrictedPython>=6.0`
-- `sympy>=1.12`
+- `lark>=1.1.0` - Parser generator for PG code preprocessing
+- `numpy>=1.24` - Numerical computations
+- `pygments>=2.15.0` - Syntax highlighting for code preprocessing
+- `pyyaml>=6.0` - YAML configuration parsing
+- `RestrictedPython>=6.0` - Safe code execution sandbox
+- `sympy>=1.12` - Symbolic mathematics
 
 ## Usage
 
