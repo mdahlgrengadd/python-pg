@@ -434,7 +434,7 @@ class Real(BaseModel, MathValue):
         return self.answer_checker(**options)
 
 
-class Complex(MathValue):
+class Complex(BaseModel, MathValue):
     """
     Complex number value.
 
@@ -443,9 +443,20 @@ class Complex(MathValue):
     Reference: lib/Value/Complex.pm
     """
 
-    type_precedence = TypePrecedence.COMPLEX
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    def __init__(self, real: float | int, imag: float | int = 0.0, context=None):
+    real: float = Field(description="The real part")
+    imag: float = Field(description="The imaginary part")
+    context: Any = Field(default=None, description="The evaluation context")
+    type_precedence: TypePrecedence = Field(default=TypePrecedence.COMPLEX, init=False)
+
+    def __init__(
+        self,
+        real: float | int | list | tuple | str,
+        imag: float | int = 0.0,
+        context=None,
+        **kwargs
+    ):
         """
         Initialize a Complex number.
 
@@ -457,39 +468,40 @@ class Complex(MathValue):
         # Handle list/tuple arguments (Perl compatibility): Complex([a, b])
         if isinstance(real, (list, tuple)):
             if len(real) >= 2:
-                self.real = float(real[0])
-                self.imag = float(real[1])
+                real_part = float(real[0])
+                imag_part = float(real[1])
             elif len(real) == 1:
-                self.real = float(real[0])
-                self.imag = 0.0
+                real_part = float(real[0])
+                imag_part = 0.0
             else:
-                self.real = 0.0
-                self.imag = 0.0
+                real_part = 0.0
+                imag_part = 0.0
         elif isinstance(real, str):
             # Parse string like "2-4i" or "2+4i"
             import re
             match = re.match(r'([+-]?\d+(?:\.\d+)?)\s*([+-])\s*(\d+(?:\.\d+)?)i', real.replace(' ', ''))
             if match:
-                self.real = float(match.group(1))
+                real_part = float(match.group(1))
                 sign = match.group(2)
-                self.imag = float(match.group(3))
+                imag_part = float(match.group(3))
                 if sign == '-':
-                    self.imag = -self.imag
+                    imag_part = -imag_part
             else:
                 # Try to parse as just real part
                 try:
-                    self.real = float(real)
-                    self.imag = 0.0
+                    real_part = float(real)
+                    imag_part = 0.0
                 except ValueError:
                     raise ValueError(f"Cannot parse complex number from string: {real}")
         else:
-            self.real = float(real)
-            self.imag = float(imag)
-        if context is not None:
-            self.context = context
-        else:
+            real_part = float(real)
+            imag_part = float(imag)
+
+        if context is None:
             from .context import get_current_context
-            self.context = get_current_context()
+            context = get_current_context()
+
+        super().__init__(real=real_part, imag=imag_part, context=context, **kwargs)
 
     def promote(self, other: MathValue) -> MathValue:
         """Complex is high in hierarchy, doesn't promote to much."""
@@ -533,6 +545,10 @@ class Complex(MathValue):
     def to_tex(self) -> str:
         """Convert to LaTeX."""
         # Similar to string, but with proper formatting
+        return self.to_string()
+
+    def __str__(self) -> str:
+        """String representation (for str() builtin)."""
         return self.to_string()
 
     def to_python(self) -> complex:

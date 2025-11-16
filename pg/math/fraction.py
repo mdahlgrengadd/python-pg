@@ -12,6 +12,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from pydantic import BaseModel, Field, ConfigDict
+
 from .numeric import Real
 from .value import MathValue, ToleranceMode, TypePrecedence
 
@@ -57,7 +59,7 @@ def reduce_fraction(num: int, den: int) -> tuple[int, int]:
     return (num // g, den // g)
 
 
-class Fraction(MathValue):
+class Fraction(BaseModel, MathValue):
     """
     Fraction represents a rational number as numerator/denominator.
 
@@ -69,7 +71,12 @@ class Fraction(MathValue):
     Reference: macros/contexts/contextFraction.pl
     """
 
-    type_precedence = TypePrecedence.FRACTION
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    numerator: int = Field(description="The numerator")
+    denominator: int = Field(description="The denominator")
+    context: Any = Field(default=None, description="The evaluation context")
+    type_precedence: TypePrecedence = Field(default=TypePrecedence.FRACTION, init=False)
 
     def __init__(
         self,
@@ -77,6 +84,7 @@ class Fraction(MathValue):
         den: int = 1,
         context: Any = None,
         reduce: bool = True,
+        **kwargs
     ):
         """
         Create a Fraction.
@@ -89,8 +97,6 @@ class Fraction(MathValue):
 
         Reference: lib/Fraction.pm::new
         """
-        self.context = context
-
         # If given a float, convert to fraction
         if isinstance(num, float) and den == 1:
             # Multiply by powers of 10 until we get an integer
@@ -102,25 +108,37 @@ class Fraction(MathValue):
             num = int(round(temp_num))
             den = temp_den
 
-        self._num = int(num)
-        self._den = int(den)
+        num = int(num)
+        den = int(den)
 
-        if self._den == 0:
+        if den == 0:
             raise ValueError("Fraction denominator cannot be zero")
 
         # Reduce if requested
         if reduce:
-            self._num, self._den = reduce_fraction(self._num, self._den)
+            num, den = reduce_fraction(num, den)
+
+        super().__init__(numerator=num, denominator=den, context=context, **kwargs)
 
     @property
     def num(self) -> int:
-        """Get numerator."""
-        return self._num
+        """Get numerator (backward compatibility property)."""
+        return self.numerator
 
     @property
     def den(self) -> int:
-        """Get denominator."""
-        return self._den
+        """Get denominator (backward compatibility property)."""
+        return self.denominator
+
+    @property
+    def _num(self) -> int:
+        """Get numerator (internal accessor for backward compatibility)."""
+        return self.numerator
+
+    @property
+    def _den(self) -> int:
+        """Get denominator (internal accessor for backward compatibility)."""
+        return self.denominator
 
     def reduce(self) -> Fraction:
         """
