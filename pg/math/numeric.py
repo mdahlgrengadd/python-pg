@@ -8,10 +8,89 @@ Reference: lib/Value/Real.pm, lib/Value/Complex.pm, lib/Value/Infinity.pm
 
 from __future__ import annotations
 
+import ast
 import math
 from typing import Any
 
 from .value import MathValue, ToleranceMode, TypePrecedence
+
+
+# Safe namespace with allowed math functions and constants (defined at module level)
+_SAFE_MATH_NAMESPACE = {
+    'pi': math.pi,
+    'e': math.e,
+    'sqrt': math.sqrt,
+    'sin': math.sin,
+    'cos': math.cos,
+    'tan': math.tan,
+    'asin': math.asin,
+    'acos': math.acos,
+    'atan': math.atan,
+    'exp': math.exp,
+    'log': math.log,
+    'log10': math.log10,
+    'abs': abs,
+    '__builtins__': {},
+}
+
+
+def _safe_eval_math_expression(expr: str) -> float:
+    """
+    Safely evaluate a mathematical expression containing only math functions and constants.
+
+    This replaces the unsafe eval() call with AST-based evaluation.
+    Supports: math constants (pi, e), math functions (sqrt, sin, cos, tan, etc),
+    and basic arithmetic operators (+, -, *, /, **)
+
+    Args:
+        expr: Mathematical expression string (e.g., "pi/2", "sqrt(4)")
+
+    Returns:
+        float: Evaluated result
+
+    Raises:
+        ValueError: If expression is invalid or contains unsafe operations
+    """
+    try:
+        # Parse the expression into an AST
+        node = ast.parse(expr, mode='eval')
+
+        # Validate that only safe operations are used
+        for child in ast.walk(node):
+            # Only allow these node types
+            allowed_types = (
+                ast.Expression,
+                ast.BinOp,
+                ast.UnaryOp,
+                ast.Call,
+                ast.Name,
+                ast.Constant,
+                ast.Add,
+                ast.Sub,
+                ast.Mult,
+                ast.Div,
+                ast.Pow,
+                ast.UAdd,
+                ast.USub,
+                ast.Load,  # Context node for variable loading
+            )
+            if not isinstance(child, allowed_types):
+                raise ValueError(f"Unsafe operation in expression: {expr}")
+
+            # Validate that Name nodes only reference allowed identifiers
+            if isinstance(child, ast.Name):
+                if child.id not in _SAFE_MATH_NAMESPACE:
+                    raise ValueError(f"Undefined name '{child.id}' in expression: {expr}")
+
+        # Compile and evaluate the AST
+        code = compile(node, '<string>', 'eval')
+        result = eval(code, _SAFE_MATH_NAMESPACE)
+        return float(result)
+
+    except SyntaxError as e:
+        raise ValueError(f"Invalid expression syntax: {expr}") from e
+    except Exception as e:
+        raise ValueError(f"Could not evaluate expression '{expr}': {e}") from e
 
 
 class Real(MathValue):
@@ -40,23 +119,8 @@ class Real(MathValue):
                 # Try to evaluate as a simple number first
                 self.value = float(value)
             except (ValueError, SyntaxError):
-                # Try to evaluate as a mathematical expression
-                try:
-                    import math as _math
-                    # Create a namespace with math constants
-                    namespace = {
-                        'pi': _math.pi,
-                        'e': _math.e,
-                        'sqrt': _math.sqrt,
-                        'sin': _math.sin,
-                        'cos': _math.cos,
-                        'tan': _math.tan,
-                    }
-                    # Evaluate the expression
-                    self.value = float(eval(value, {"__builtins__": {}}, namespace))
-                except Exception:
-                    # If all else fails, raise the original error
-                    raise ValueError(f"Could not convert '{value}' to a real number")
+                # Try to evaluate as a mathematical expression using safe parser
+                self.value = _safe_eval_math_expression(value)
         else:
             self.value = float(value)
 
