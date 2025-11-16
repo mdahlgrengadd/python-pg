@@ -43,6 +43,10 @@ htmlcov/
 # Documentation
 docs/_build/
 
+# Markdown files (except README.md)
+*.md
+!README.md
+
 # OS
 .DS_Store
 Thumbs.db
