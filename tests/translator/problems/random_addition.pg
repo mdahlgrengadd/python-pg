@@ -1,0 +1,20 @@
+##DESCRIPTION
+## Problem with random numbers
+##ENDDESCRIPTION
+
+DOCUMENT();
+loadMacros("PG.pl", "PGbasicmacros.pl");
+
+$a = random(1, 10, 1);
+$b = random(1, 10, 1);
+$ans = $a + $b;
+
+BEGIN_TEXT
+What is \($a + $b\)?
+$PAR
+Answer: \{ ans_rule(20) \}
+END_TEXT
+
+ANS(num_cmp($ans));
+
+ENDDOCUMENT();

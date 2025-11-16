@@ -1,0 +1,14 @@
+##DESCRIPTION
+## Simple numeric answer problem for testing
+##ENDDESCRIPTION
+
+DOCUMENT();
+loadMacros("PG.pl", "PGbasicmacros.pl");
+
+TEXT("What is 2 + 2?");
+TEXT(BR());
+TEXT("Answer: ", ans_rule(20));
+
+ANS(num_cmp(4));
+
+ENDDOCUMENT();

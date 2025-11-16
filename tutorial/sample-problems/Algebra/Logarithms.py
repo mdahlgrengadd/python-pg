@@ -1,0 +1,90 @@
+# DESCRIPTION
+# Laws of logarithms
+# ENDDESCRIPTION
+# DBsubject(WeBWorK)
+# DBchapter(WeBWorK tutorial)
+# DBsection(PGML tutorial 2015)
+# Date(06/01/2015)
+# Institution(Hope College)
+# Author(Paul Pearson)
+# MO(1)
+# KEYWORDS('algebra', 'laws of logarithms')
+# :% name = Logarithms
+# :% type = Sample
+# :% subject = [algebra, precalculus]
+# :% categories = [logarithm]
+# :% section = preamble
+
+from pg.mathobjects import Context, Compute
+from pg.pg import DOCUMENT, TEXT, SOLUTION, ENDDOCUMENT
+from pg.pgml import PGML
+from pg.standard import random
+
+DOCUMENT()
+# :% section = setup
+#: Add the variables `x`, `y`, and `z` to the context and set their limits to be
+#: `[2, 3]` since logarithms are not defined on the default domain `[-1, 1]`.
+#: After defining `$answer`, undefine certain operators and functions so that
+#: students will have to give their answer in the desired form. Since the answer
+#: requires multiplication, students cannot be prevented from entering an answer
+#: such as `ln(x*x*x...)` instead of `$a * ln(x)`. However, by choosing large
+#: values for `$a, $b, $c` such answers can be strongly discouraged.  (Note
+#: that this can be done using Bizarro arithmetic and a custom answer checker.)
+Context().variables.are(x='Real', y='Real', z='Real')
+Context().variables.set(x={'limits':  [2, 3]})
+Context().variables.set(y={'limits':  [2, 3]})
+Context().variables.set(z={'limits':  [2, 3]})
+a = random(20, 40)
+b = random(20, 40)
+while True:
+    c = random(20, 40)
+    if c != b:
+        break
+# TeX
+answer = Compute(f"{a} * ln(x) + {b} * ln(y) - {c} * ln(z)")
+Context().operators.undefine('/', '^', '**')
+Context().functions.undefine('sqrt')
+# :% section = statement
+PGML_BLOCK_0 = '''
+Using laws of logarithms, write the expression below using sums or differences
+of logarithmic expressions which do not contain the logarithms of products,
+quotients, or powers.
+
+[``\\ln\\left(\\frac{x^{[a]} y^{[b]}}{z^{[c]}}\\right) =``] [_]{answer}{20}
+'''
+TEXT(PGML(PGML_BLOCK_0))
+# :% section = solution
+PGML_BLOCK_1 = '''
+Solution explanation goes here.
+'''
+SOLUTION(PGML(PGML_BLOCK_1))
+ENDDOCUMENT()
+
+if __name__ == "__main__":
+    """Execute problem and display results."""
+    from pg.macros.core.pg_core import get_environment
+
+    env = get_environment()
+    if env:
+        print("=" * 80)
+        print("PROBLEM STATEMENT")
+        print("=" * 80)
+        print(''.join(env.output_array))
+
+        if env.solution_array:
+            print("\n" + "=" * 80)
+            print("SOLUTION")
+            print("=" * 80)
+            print(''.join(env.solution_array))
+
+        if env.hint_array:
+            print("\n" + "=" * 80)
+            print("HINT")
+            print("=" * 80)
+            print(''.join(env.hint_array))
+
+        print("\n" + "=" * 80)
+        print(f"ANSWERS: {len(env.answers_hash)} answer blank(s)")
+        print("=" * 80)
+        for name in sorted(env.answers_hash.keys()):
+            print(f"  {name}")
