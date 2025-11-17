@@ -209,6 +209,7 @@ class InProcessSandbox:
             'tuple': tuple,
             'dict': dict,
             'set': set,
+            'frozenset': frozenset,  # Required for immutable sets
             # Math functions
             'abs': abs,
             'round': round,
@@ -227,9 +228,13 @@ class InProcessSandbox:
             'reversed': reversed,
             'all': all,
             'any': any,
+            'iter': iter,  # Required for iteration protocol (needed by Pydantic)
+            'next': next,  # Required for iterators (needed by Pydantic)
             # String functions
             'chr': chr,
             'ord': ord,
+            'repr': repr,  # Required for __repr__ methods (needed by Pydantic)
+            'format': format,  # Required for f-strings and .format() (needed by Pydantic)
             # Type checking
             'isinstance': isinstance,
             'issubclass': issubclass,
@@ -237,6 +242,13 @@ class InProcessSandbox:
             'hasattr': hasattr,
             'getattr': getattr,
             'setattr': setattr,
+            'delattr': delattr,  # Required for attribute deletion (needed by Pydantic)
+            # Class/function utilities (CRITICAL for Pydantic BaseModel)
+            '__build_class__': __builtins__['__build_class__'] if isinstance(__builtins__, dict) else getattr(__builtins__, '__build_class__'),  # Required for class definition with metaclasses
+            'property': property,  # Required for @property decorator
+            'classmethod': classmethod,  # Required for @classmethod decorator (used by field_validator)
+            'staticmethod': staticmethod,  # Required for @staticmethod decorator
+            'super': super,  # Required for inheritance (used in __init__ overrides)
             # Constants
             'True': True,
             'False': False,
@@ -260,6 +272,9 @@ class InProcessSandbox:
             # Allow pg.* namespace packages (refactored structure)
             if name.startswith('pg.') or name == 'pg':
                 return original_import(name, globals, locals, fromlist, level)
+            # Allow pydantic (data validation library - needed for BaseModel, Field, validators)
+            if name.startswith('pydantic') or name == 'pydantic_core':
+                return original_import(name, globals, locals, fromlist, level)
             # Allow math, random, and re (already in namespace but allow re-import)
             if name in ('math', 'random', 're'):
                 return original_import(name, globals, locals, fromlist, level)
@@ -270,6 +285,9 @@ class InProcessSandbox:
 
         # Restricted builtins dict
         self.namespace['__builtins__'] = safe_builtins
+
+        # Add __name__ for module introspection (needed by Pydantic during class creation)
+        self.namespace['__name__'] = '__sandbox__'
 
         # Add PerlList for Perl-like array behavior
         self.namespace['PerlList'] = PerlList
