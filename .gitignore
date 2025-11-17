@@ -25,6 +25,9 @@ wheels/
 !.gitignore
 !.gitattributes
 
+# Claude AI
+.claude/
+
 # Virtual environments
 .venv/
 venv/
