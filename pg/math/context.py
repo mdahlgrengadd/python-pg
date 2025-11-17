@@ -11,7 +11,7 @@ import math
 from typing import Dict, Any, Optional, Set
 from copy import deepcopy
 
-from pydantic import BaseModel, ConfigDict, PrivateAttr
+from pydantic import BaseModel, ConfigDict, PrivateAttr, Field
 
 
 # Sentinel used to detect when Context() is called without an explicit name.
@@ -24,11 +24,7 @@ class VariableManager(BaseModel):
     """Manages variables available in the context."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        if not hasattr(self, "_variables"):
-            self._variables: Dict[str, dict] = {}  # name -> {type, options}
+    _variables: Dict[str, dict] = PrivateAttr(default_factory=dict)
 
     def add(self, name: str = None, type_: str = 'Real', **kwargs):
         """
@@ -147,11 +143,7 @@ class ConstantManager(BaseModel):
     """Manages constants available in the context."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        if not hasattr(self, "_constants"):
-            self._constants: Dict[str, Any] = {}
+    _constants: Dict[str, Any] = PrivateAttr(default_factory=dict)
 
     def add(self, name: str = None, value: Any = None, **kwargs):
         """
@@ -201,11 +193,7 @@ class FunctionManager(BaseModel):
     """Manages functions available in the context."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        if not hasattr(self, "_functions"):
-            self._functions: Dict[str, dict] = {}
+    _functions: Dict[str, dict] = PrivateAttr(default_factory=dict)
 
     def add(self, name: str, options=None, **kwargs):
         """Add a function to the context.
@@ -288,11 +276,7 @@ class OperatorManager(BaseModel):
     """Manages operators available in the context."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        if not hasattr(self, "_operators"):
-            self._operators: Dict[str, dict] = {}
+    _operators: Dict[str, dict] = PrivateAttr(default_factory=dict)
 
     def add(self, name: str, **options):
         """Add an operator to the context."""
@@ -344,11 +328,7 @@ class StringsManager(BaseModel):
     """Manager for string values in a context."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        if not hasattr(self, "_strings"):
-            self._strings: Dict[str, StringConfig] = {}
+    _strings: Dict[str, StringConfig] = PrivateAttr(default_factory=dict)
 
     def add(self, name=None, config=None, **strings: dict) -> None:
         """
@@ -403,6 +383,19 @@ class StringsManager(BaseModel):
         return new_mgr
 
 
+def _default_flag_settings() -> Dict[str, Any]:
+    """Default flag values for newly created contexts."""
+    return {
+        'tolerance': 0.001,
+        'tolType': 'relative',
+        'zeroLevel': 1e-14,
+        'zeroLevelTol': 1e-12,
+        'reduceConstants': 1,
+        'reduceConstantFunctions': 1,
+        # Additional polynomial flags are configured per specialized context
+    }
+
+
 class ContextFlags(BaseModel):
     """
     Manages context flags/options.
@@ -412,25 +405,7 @@ class ContextFlags(BaseModel):
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
-    _flags: Dict[str, Any] = PrivateAttr(default_factory=dict)
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        if not self._flags:
-            self._flags = {
-            # Comparison tolerances
-            'tolerance': 0.001,
-            'tolType': 'relative',
-            'zeroLevel': 1e-14,
-            'zeroLevelTol': 1e-12,
-
-            # Reduction flags
-            'reduceConstants': 1,
-            'reduceConstantFunctions': 1,
-
-            # Polynomial validation flags (Week 5) - not set by default
-            # These are only set when using specialized contexts
-        }
+    _flags: Dict[str, Any] = PrivateAttr(default_factory=_default_flag_settings)
 
     def set(self, **kwargs):
         """Set flag values."""
@@ -469,11 +444,7 @@ class ParensManager(BaseModel):
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        if not hasattr(self, "_parens"):
-            self._parens: Dict[str, dict] = {}
+    _parens: Dict[str, dict] = PrivateAttr(default_factory=dict)
 
     def set(self, paren_type: str, **options):
         """
@@ -505,6 +476,7 @@ class ParensManager(BaseModel):
 
 class Context(BaseModel):
     _storage: Dict[str, Any] = PrivateAttr(default_factory=AutovivDict)
+    _initialized: bool = PrivateAttr(default=False)
     """
     Context for parsing and evaluating mathematical expressions.
 
@@ -518,13 +490,13 @@ class Context(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
     name: str = "Numeric"
-    variables: VariableManager | None = None
-    constants: ConstantManager | None = None
-    functions: FunctionManager | None = None
-    operators: OperatorManager | None = None
-    strings: StringsManager | None = None
-    flags: ContextFlags | None = None
-    parens: ParensManager | None = None
+    variables: VariableManager = Field(default_factory=VariableManager)
+    constants: ConstantManager = Field(default_factory=ConstantManager)
+    functions: FunctionManager = Field(default_factory=FunctionManager)
+    operators: OperatorManager = Field(default_factory=OperatorManager)
+    strings: StringsManager = Field(default_factory=StringsManager)
+    flags: ContextFlags = Field(default_factory=ContextFlags)
+    parens: ParensManager = Field(default_factory=ParensManager)
 
     def __new__(cls, name: str | object = _UNSPECIFIED_CONTEXT, **kwargs):
         """
@@ -565,60 +537,41 @@ class Context(BaseModel):
         Args:
             name: Context name (Numeric, Complex, Point, Vector, Interval, LimitedPolynomial, etc.)
         """
-        # If this context has already been initialized, skip re-initialization
-        if hasattr(self, 'name') and self.name is not None:
+        if getattr(self, '_initialized', False):
             return
 
-        # Initialize managers if not provided
-        if 'variables' not in kwargs:
-            kwargs['variables'] = VariableManager()
-        if 'constants' not in kwargs:
-            kwargs['constants'] = ConstantManager()
-        if 'functions' not in kwargs:
-            kwargs['functions'] = FunctionManager()
-        if 'operators' not in kwargs:
-            kwargs['operators'] = OperatorManager()
-        if 'strings' not in kwargs:
-            kwargs['strings'] = StringsManager()
-        if 'flags' not in kwargs:
-            kwargs['flags'] = ContextFlags()
-        if 'parens' not in kwargs:
-            kwargs['parens'] = ParensManager()
-
-        kwargs['name'] = name
+        kwargs.setdefault('name', name)
         super().__init__(**kwargs)
-
-        # General storage for Perl-style hash access
-        # Allows Context()['key'] and nested Context()['error']['msg']
-        # Use AutovivDict for automatic nested dict creation
+        self._initialized = True
+        self._storage = AutovivDict()
 
         # Initialize based on context name
-        if name == 'Numeric':
+        if self.name == 'Numeric':
             self._init_numeric()
-        elif name == 'Complex':
+        elif self.name == 'Complex':
             self._init_complex()
-        elif name == 'Point':
+        elif self.name == 'Point':
             self._init_point()
-        elif name == 'Vector':
+        elif self.name == 'Vector':
             self._init_vector()
-        elif name == 'Interval':
+        elif self.name == 'Interval':
             self._init_interval()
-        elif name == 'Fraction':
+        elif self.name == 'Fraction':
             self._init_fraction()
-        elif name == 'Fraction-NoDecimals':
+        elif self.name == 'Fraction-NoDecimals':
             self._init_fraction_no_decimals()
-        elif name == 'LimitedFraction':
+        elif self.name == 'LimitedFraction':
             self._init_limited_fraction()
-        elif name == 'LimitedProperFraction':
+        elif self.name == 'LimitedProperFraction':
             self._init_limited_proper_fraction()
-        elif name.startswith('LimitedPolynomial'):
-            self._init_limited_polynomial(strict=('-Strict' in name))
-        elif name.startswith('PolynomialFactors'):
-            self._init_polynomial_factors(strict=('-Strict' in name))
-        elif name == 'TrigDegrees':
+        elif self.name.startswith('LimitedPolynomial'):
+            self._init_limited_polynomial(strict=('-Strict' in self.name))
+        elif self.name.startswith('PolynomialFactors'):
+            self._init_polynomial_factors(strict=('-Strict' in self.name))
+        elif self.name == 'TrigDegrees':
             self._init_trig_degrees()
-        elif name == 'Units' or name == 'LimitedUnits':
-            self._init_units(limited=(name == 'LimitedUnits'))
+        elif self.name == 'Units' or self.name == 'LimitedUnits':
+            self._init_units(limited=(self.name == 'LimitedUnits'))
 
     def _init_numeric(self):
         """Initialize Numeric context with standard operations."""
@@ -980,6 +933,9 @@ class Context(BaseModel):
         )
         if hasattr(self, '_storage'):
             new_context._storage = deepcopy(self._storage)
+        else:
+            new_context._storage = AutovivDict()
+        new_context._initialized = True
         return new_context
 
     def withUnitsFor(self, *categories):
@@ -1139,6 +1095,7 @@ def get_current_context() -> Context:
         Current context (creates Numeric if none exists)
     """
     return get_context()
+
 
 
 
