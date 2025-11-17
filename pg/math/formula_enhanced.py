@@ -18,6 +18,8 @@ import math
 import random
 from typing import Any, Callable
 
+from pydantic import ConfigDict, Field, PrivateAttr
+
 try:
     import sympy as sp
     from sympy.parsing.sympy_parser import parse_expr
@@ -46,6 +48,27 @@ class FormulaEnhanced(Formula):
 
     Reference: Value::Formula.pm
     """
+
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        validate_assignment=True,
+        extra='allow',
+    )
+
+    # Pydantic fields for enhanced features
+    granularity: int = Field(default=1000, gt=0, description="Granularity for point distribution")
+    check_undefined_points: bool = Field(default=False, description="Track undefined points in domain")
+    max_undefined: int | None = Field(default=None, description="Max allowed undefined points")
+    parameters: list[str] = Field(default_factory=list, description="Parameter names for adaptive solving")
+
+    # Private attributes for internal state
+    _test_adapt: list[MathValue] | None = PrivateAttr(default=None)
+    _param_func: Callable | None = PrivateAttr(default=None)
+    _python_func: Callable | None = PrivateAttr(default=None)
+    _func_cache: dict[tuple, Callable] = PrivateAttr(default_factory=dict)
+    _options: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _parameters_values: list[float] | None = PrivateAttr(default=None)
+    _parameters_dict: dict[str, float] | None = PrivateAttr(default=None)
 
     def __init__(
         self,
@@ -81,35 +104,42 @@ class FormulaEnhanced(Formula):
             parameters: Parameter names for adaptive solving
             **options: Additional options
         """
-        # Store parameters before calling super().__init__ so we can rebuild SymPy expr
-        self._parameters = parameters or []
+        # Call Pydantic __init__ with enhanced fields
+        super().__init__(
+            expression=expression,
+            variables=variables,
+            context=context,
+            test_points=test_points,
+            num_test_points=num_test_points,
+            limits=limits,
+            granularity=granularity,
+            check_undefined_points=check_undefined_points,
+            max_undefined=max_undefined,
+            parameters=parameters or [],
+        )
 
-        super().__init__(expression, variables, context, test_points, num_test_points, limits)
-
-        # Test point configuration
-        self._granularity = granularity
-
-        # Domain checking
-        self.domain_mismatch = False
-        self.check_undefined_points = check_undefined_points
-        self.max_undefined = max_undefined or num_test_points
-
-        # Adaptive parameters
-        self._test_adapt: list[MathValue] | None = None
-        self._param_func: Callable | None = None
-
-        # Caching
-        self._python_func: Callable | None = None
-        self._func_cache: dict[tuple, Callable] = {}
-
-        # Options
+        # Initialize private attributes
         self._options = options
+        self._test_adapt = None
+        self._param_func = None
+        self._python_func = None
+        self._func_cache = {}
+        self._parameters_values = None
+        self._parameters_dict = None
+
+        # Override Formula's defaults with enhanced field values
+        # (Formula sets these to defaults, but we want to preserve our values)
+        self.check_undefined_points = check_undefined_points
+        if max_undefined is None:
+            self.max_undefined = num_test_points
+        else:
+            self.max_undefined = max_undefined
 
         # Rebuild SymPy expression with parameters included
-        if isinstance(expression, str) and SYMPY_AVAILABLE and self._parameters:
+        if isinstance(expression, str) and SYMPY_AVAILABLE and self.parameters:
             try:
                 # Parse with both variables and parameters as symbols
-                all_vars = (variables or []) + self._parameters
+                all_vars = (variables or []) + self.parameters
                 local_dict = {var: sp.Symbol(var) for var in all_vars}
                 # Add mathematical constants
                 local_dict['e'] = sp.E
@@ -197,8 +227,8 @@ class FormulaEnhanced(Formula):
             points.append(point)
 
         # Apply granularity
-        if self._granularity > 0:
-            points = self._apply_granularity(points, limits, self._granularity)
+        if self.granularity > 0:
+            points = self._apply_granularity(points, limits, self.granularity)
 
         # If no_errors is True, evaluate points and return tuple
         if no_errors:
@@ -293,7 +323,7 @@ class FormulaEnhanced(Formula):
 
         # Get variables and parameters
         vars_list = sorted(self.variables)
-        params_list = sorted(self._parameters)
+        params_list = sorted(self.parameters)
         param_zeros = [0] * len(params_list)
 
         # Get or create Python function
@@ -474,16 +504,16 @@ def formula_func({var_params}):
             True if parameters solved successfully
         """
         # Check if we have parameters
-        if not self._parameters:
+        if not self.parameters:
             return False
 
         # Check if formula uses any parameters
-        if not self.uses_one_of(*self._parameters):
+        if not self.uses_one_of(*self.parameters):
             return False
 
         # Get number of parameters
-        num_params = len(self._parameters)
-        params_list = sorted(self._parameters)
+        num_params = len(self.parameters)
+        params_list = sorted(self.parameters)
 
         # Try multiple attempts with different random points
         for attempt in range(attempts):
@@ -662,7 +692,7 @@ def formula_func({var_params}):
             self._test_points = self.create_random_points()
 
         points = self._test_points
-        params_list = sorted(self._parameters)
+        params_list = sorted(self.parameters)
         param_values = self._parameters_values
 
         # Get function
@@ -696,7 +726,7 @@ def formula_func({var_params}):
             True if formula uses any of the names
         """
         # Check both variables and parameters
-        formula_vars = set(self.variables) | set(self._parameters)
+        formula_vars = set(self.variables) | set(self.parameters)
         check_vars = set(names)
         return bool(formula_vars & check_vars)
 
@@ -720,7 +750,7 @@ def formula_func({var_params}):
             True if formulas are equivalent
         """
         # Try adaptive parameters if enabled and available
-        if use_adaptive and self._parameters:
+        if use_adaptive and self.parameters:
             try:
                 if self.adapt_parameters(other):
                     # Use adapted test values
