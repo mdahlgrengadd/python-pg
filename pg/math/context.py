@@ -10,14 +10,19 @@ Reference: lib/Context.pm in legacy Perl codebase
 import math
 from typing import Dict, Any, Optional, Set
 from copy import deepcopy
-from dataclasses import dataclass
+
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 
-class VariableManager:
+class VariableManager(BaseModel):
     """Manages variables available in the context."""
 
-    def __init__(self):
-        self._variables: Dict[str, dict] = {}  # name -> {type, options}
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if not hasattr(self, "_variables"):
+            self._variables: Dict[str, dict] = {}  # name -> {type, options}
 
     def add(self, name: str = None, type_: str = 'Real', **kwargs):
         """
@@ -100,7 +105,7 @@ class VariableManager:
     def copy(self):
         """Create a copy of this manager."""
         new_mgr = VariableManager()
-        new_mgr._variables = {k: v.copy() for k, v in self._variables.items()}
+        new_mgr._variables = {k: {'type': v['type'], 'options': v['options'].copy()} for k, v in self._variables.items()}
         return new_mgr
 
     def __getitem__(self, key: str) -> Any:
@@ -132,11 +137,15 @@ class VariableManager:
         setattr(self, key, value)
 
 
-class ConstantManager:
+class ConstantManager(BaseModel):
     """Manages constants available in the context."""
 
-    def __init__(self):
-        self._constants: Dict[str, Any] = {}
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if not hasattr(self, "_constants"):
+            self._constants: Dict[str, Any] = {}
 
     def add(self, name: str = None, value: Any = None, **kwargs):
         """
@@ -182,11 +191,15 @@ class ConstantManager:
         return name in self._constants
 
 
-class FunctionManager:
+class FunctionManager(BaseModel):
     """Manages functions available in the context."""
 
-    def __init__(self):
-        self._functions: Dict[str, dict] = {}
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if not hasattr(self, "_functions"):
+            self._functions: Dict[str, dict] = {}
 
     def add(self, name: str, options=None, **kwargs):
         """Add a function to the context.
@@ -265,11 +278,15 @@ class FunctionManager:
         return new_mgr
 
 
-class OperatorManager:
+class OperatorManager(BaseModel):
     """Manages operators available in the context."""
 
-    def __init__(self):
-        self._operators: Dict[str, dict] = {}
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if not hasattr(self, "_operators"):
+            self._operators: Dict[str, dict] = {}
 
     def add(self, name: str, **options):
         """Add an operator to the context."""
@@ -307,19 +324,25 @@ class OperatorManager:
         return new_mgr
 
 
-@dataclass
-class StringConfig:
+class StringConfig(BaseModel):
     """Configuration for a string value in the context."""
+
+    model_config = ConfigDict(validate_assignment=True)
+
     value: str
     alias: str | None = None
     case_sensitive: bool = False
 
 
-class StringsManager:
+class StringsManager(BaseModel):
     """Manager for string values in a context."""
 
-    def __init__(self):
-        self._strings: Dict[str, StringConfig] = {}
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if not hasattr(self, "_strings"):
+            self._strings: Dict[str, StringConfig] = {}
 
     def add(self, name=None, config=None, **strings: dict) -> None:
         """
@@ -367,12 +390,14 @@ class StringsManager:
     def copy(self):
         """Create a copy of this manager."""
         new_mgr = StringsManager()
-        new_mgr._strings = {k: StringConfig(v.value, v.alias, v.case_sensitive)
-                            for k, v in self._strings.items()}
+        new_mgr._strings = {
+            k: StringConfig(value=v.value, alias=v.alias, case_sensitive=v.case_sensitive)
+            for k, v in self._strings.items()
+        }
         return new_mgr
 
 
-class ContextFlags:
+class ContextFlags(BaseModel):
     """
     Manages context flags/options.
 
@@ -380,8 +405,13 @@ class ContextFlags:
     Reference: lib/Context/Flags.pm
     """
 
-    def __init__(self):
-        self._flags: Dict[str, Any] = {
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+    _flags: Dict[str, Any] = PrivateAttr(default_factory=dict)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if not self._flags:
+            self._flags = {
             # Comparison tolerances
             'tolerance': 0.001,
             'tolType': 'relative',
@@ -424,7 +454,7 @@ class AutovivDict(dict):
         return super().__getitem__(key)
 
 
-class ParensManager:
+class ParensManager(BaseModel):
     """
     Manages parentheses configuration in the context.
 
@@ -432,8 +462,12 @@ class ParensManager:
     (e.g., for points, vectors, intervals, lists).
     """
 
-    def __init__(self):
-        self._parens: Dict[str, dict] = {}
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if not hasattr(self, "_parens"):
+            self._parens: Dict[str, dict] = {}
 
     def set(self, paren_type: str, **options):
         """
@@ -463,7 +497,8 @@ class ParensManager:
         return new_mgr
 
 
-class Context:
+class Context(BaseModel):
+    _storage: Dict[str, Any] = PrivateAttr(default_factory=AutovivDict)
     """
     Context for parsing and evaluating mathematical expressions.
 
@@ -473,6 +508,17 @@ class Context:
 
     Reference: lib/Context.pm (lines 1-500) in legacy Perl codebase
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    name: str = "Numeric"
+    variables: VariableManager | None = None
+    constants: ConstantManager | None = None
+    functions: FunctionManager | None = None
+    operators: OperatorManager | None = None
+    strings: StringsManager | None = None
+    flags: ContextFlags | None = None
+    parens: ParensManager | None = None
 
     def __new__(cls, name: str = 'Numeric'):
         """
@@ -504,7 +550,7 @@ class Context:
         # For Context() with default name, return current context
         return get_context()
 
-    def __init__(self, name: str = 'Numeric'):
+    def __init__(self, name: str = 'Numeric', **kwargs):
         """
         Create a new Context or initialize an existing one.
 
@@ -512,22 +558,31 @@ class Context:
             name: Context name (Numeric, Complex, Point, Vector, Interval, LimitedPolynomial, etc.)
         """
         # If this context has already been initialized, skip re-initialization
-        if hasattr(self, 'name'):
+        if hasattr(self, 'name') and self.name is not None:
             return
 
-        self.name = name
-        self.variables = VariableManager()
-        self.constants = ConstantManager()
-        self.functions = FunctionManager()
-        self.operators = OperatorManager()
-        self.strings = StringsManager()
-        self.flags = ContextFlags()
-        self.parens = ParensManager()
+        # Initialize managers if not provided
+        if 'variables' not in kwargs:
+            kwargs['variables'] = VariableManager()
+        if 'constants' not in kwargs:
+            kwargs['constants'] = ConstantManager()
+        if 'functions' not in kwargs:
+            kwargs['functions'] = FunctionManager()
+        if 'operators' not in kwargs:
+            kwargs['operators'] = OperatorManager()
+        if 'strings' not in kwargs:
+            kwargs['strings'] = StringsManager()
+        if 'flags' not in kwargs:
+            kwargs['flags'] = ContextFlags()
+        if 'parens' not in kwargs:
+            kwargs['parens'] = ParensManager()
+
+        kwargs['name'] = name
+        super().__init__(**kwargs)
 
         # General storage for Perl-style hash access
         # Allows Context()['key'] and nested Context()['error']['msg']
         # Use AutovivDict for automatic nested dict creation
-        self._storage: Dict[str, Any] = AutovivDict()
 
         # Initialize based on context name
         if name == 'Numeric':
@@ -903,16 +958,20 @@ class Context:
         Returns:
             New Context instance with copied settings
         """
-        new_context = Context.__new__(Context)
-        new_context.name = name if name is not None else self.name
-        new_context.variables = self.variables.copy()
-        new_context.constants = self.constants.copy()
-        new_context.functions = self.functions.copy()
-        new_context.operators = self.operators.copy()
-        new_context.strings = self.strings.copy()
-        new_context.flags = self.flags.copy()
-        new_context.parens = self.parens.copy()
-        new_context._storage = deepcopy(self._storage)
+        # Create new context using model_construct to bypass validation
+        # and manually copy all managers to ensure independence
+        new_context = Context.model_construct(
+            name=name if name is not None else self.name,
+            variables=self.variables.copy() if self.variables else VariableManager(),
+            constants=self.constants.copy() if self.constants else ConstantManager(),
+            functions=self.functions.copy() if self.functions else FunctionManager(),
+            operators=self.operators.copy() if self.operators else OperatorManager(),
+            strings=self.strings.copy() if self.strings else StringsManager(),
+            flags=self.flags.copy() if self.flags else ContextFlags(),
+            parens=self.parens.copy() if self.parens else ParensManager(),
+        )
+        if hasattr(self, '_storage'):
+            new_context._storage = deepcopy(self._storage)
         return new_context
 
     def withUnitsFor(self, *categories):
@@ -1072,3 +1131,6 @@ def get_current_context() -> Context:
         Current context (creates Numeric if none exists)
     """
     return get_context()
+
+
+

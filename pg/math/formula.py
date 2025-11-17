@@ -28,7 +28,9 @@ from .value import MathValue, ToleranceMode, TypePrecedence
 
 import random
 import types
-from typing import Any, Callable
+from typing import Any, Callable, ClassVar
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 _SYMPY_TRANSFORMATIONS: tuple = ()
 try:
@@ -72,7 +74,7 @@ class CMPWrapper:
         return checker.withPostFilter(filter_function)
 
 
-class Formula(MathValue):
+class Formula(BaseModel, MathValue):
     """
     Formula represents a mathematical expression with deferred evaluation.
 
@@ -90,7 +92,19 @@ class Formula(MathValue):
         >>> f.substitute("x", Real(5))  # Returns Formula("36")
     """
 
-    type_precedence = TypePrecedence.FORMULA
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        validate_assignment=True,
+        extra='allow',  # Allow private attributes like _test_points, _sympy_expr, etc.
+    )
+
+    type_precedence: ClassVar[TypePrecedence] = TypePrecedence.FORMULA
+
+    expression: str | Any
+    variables: list[str] = Field(default_factory=list)
+    context: Any | None = None
+    num_test_points: int = 5
+    limits: dict[str, tuple[float, float]] = Field(default_factory=dict)
 
     def __init__(
         self,
@@ -100,6 +114,7 @@ class Formula(MathValue):
         test_points: list[list[float]] | None = None,
         num_test_points: int = 5,
         limits: dict[str, tuple[float, float]] | None = None,
+        **kwargs,
     ):
         """
         Create a Formula from an expression.
@@ -112,10 +127,24 @@ class Formula(MathValue):
             num_test_points: Number of random test points to generate (default: 5)
             limits: Variable limits for random test point generation {var: (min, max)}
         """
-        self.expression = expression
+        # Prepare kwargs for Pydantic
+        if 'expression' not in kwargs:
+            kwargs['expression'] = expression
+        if variables is not None and 'variables' not in kwargs:
+            kwargs['variables'] = variables
+        if context is not None and 'context' not in kwargs:
+            kwargs['context'] = context
+        if num_test_points != 5 and 'num_test_points' not in kwargs:
+            kwargs['num_test_points'] = num_test_points
+        if limits is not None and 'limits' not in kwargs:
+            kwargs['limits'] = limits
+
+        # Call Pydantic __init__
+        super().__init__(**kwargs)
+
         # Extract variables from expression if not provided
-        if variables is None or (isinstance(variables, list) and len(variables) == 0):
-            if isinstance(expression, str):
+        if not self.variables:
+            if isinstance(self.expression, str):
                 # Extract variables from the expression string
                 import re
                 # Common function names to exclude
@@ -124,24 +153,21 @@ class Formula(MathValue):
                                  'step', 'fact', 'pi', 'e', 'E', 'PI'}
                 # Find all word-like tokens
                 var_pattern = r'\b([a-zA-Z][a-zA-Z0-9_]*)\b'
-                found_vars = set(re.findall(var_pattern, expression))
+                found_vars = set(re.findall(var_pattern, self.expression))
                 # Filter out function names and numbers
                 extracted_vars = [v for v in found_vars if v not in function_names and not v.replace('_', '').isdigit()]
                 if extracted_vars:
-                    variables = extracted_vars
-                elif context is not None:
+                    self.variables = extracted_vars
+                elif self.context is not None:
                     # Fallback to context variables
-                    variables = context.variables.list()
+                    self.variables = self.context.variables.list()
                 else:
-                    variables = []
-        self.variables = variables or []
-        self.context = context
+                    self.variables = []
 
         # Test point configuration (for formula comparison)
         self._test_points = test_points
         self._test_values = None
-        self._num_test_points = num_test_points
-        self._limits = limits or {}
+        self._limits = limits or {} if limits is not None else {}
 
         # Cached Python function for evaluation
         self._python_func = None

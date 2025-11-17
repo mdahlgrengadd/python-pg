@@ -62,6 +62,10 @@ class MathValue(ABC):
     Subclasses must implement:
     - type_precedence: Class variable defining promotion order
     - All abstract methods
+
+    Note: Concrete subclasses should inherit from both BaseModel and MathValue,
+    e.g., `class Real(BaseModel, MathValue):`. MathValue itself is abstract
+    and does not inherit from BaseModel to avoid MRO conflicts.
     """
 
     # Type precedence for promotion (must be set by subclasses)

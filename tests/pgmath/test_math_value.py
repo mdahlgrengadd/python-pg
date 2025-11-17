@@ -1,20 +1,22 @@
 """Tests for MathValue base class behaviors."""
 
+from typing import ClassVar
+
+from pydantic import BaseModel
+
 from pg.math.collections import List as MathList
 from pg.math.numeric import Complex, Real
 from pg.math.value import MathValue, TypePrecedence
 
 
-class DummyValue(MathValue):
+class DummyValue(BaseModel, MathValue):
     """Simple concrete MathValue for testing abstract helpers."""
 
-    type_precedence = TypePrecedence.NUMBER
-
-    def __init__(self, value: float) -> None:
-        self.value = value
+    type_precedence: ClassVar[TypePrecedence] = TypePrecedence.NUMBER
+    value: float
 
     def promote(self, other: MathValue) -> MathValue:
-        return DummyValue(float(other.to_python()))
+        return DummyValue(value=float(other.to_python()))
 
     def compare(self, other: MathValue, tolerance: float = 0.001, mode: str = "relative") -> bool:
         if not isinstance(other, DummyValue):
@@ -95,13 +97,13 @@ class TestMathValueUtilities:
         assert math_list.elements[0].value == 1.0
 
     def test_compare_with_tolerance(self):
-        base = DummyValue(1.0)
-        assert base.compare(DummyValue(1.0005), tolerance=0.001)
-        assert base.compare(DummyValue(1.01), tolerance=0.001) is False
+        base = DummyValue(value=1.0)
+        assert base.compare(DummyValue(value=1.0005), tolerance=0.001)
+        assert base.compare(DummyValue(value=1.01), tolerance=0.001) is False
 
     def test_promote_method_example(self):
-        value = DummyValue(2.0)
-        promoted = value.promote(DummyValue(5.0))
+        value = DummyValue(value=2.0)
+        promoted = value.promote(DummyValue(value=5.0))
         assert isinstance(promoted, DummyValue)
         assert promoted.value == 5.0
 

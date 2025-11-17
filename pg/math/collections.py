@@ -6,28 +6,30 @@ Reference: lib/Value/List.pm, lib/Value/String.pm
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from .value import MathValue, ToleranceMode, TypePrecedence
 
 
-class List(MathValue):
+class List(BaseModel, MathValue):
     """
     List/sequence of MathValue elements.
 
     Reference: lib/Value/List.pm
     """
 
-    type_precedence = TypePrecedence.LIST
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
-    def __init__(self, elements: list[MathValue]):
-        """
-        Initialize a List.
+    type_precedence: ClassVar[TypePrecedence] = TypePrecedence.LIST
+    elements: list[MathValue] = Field(default_factory=list)
 
-        Args:
-            elements: List of MathValue elements
-        """
-        self.elements = elements
+    def __init__(self, elements: list[MathValue] | None = None, **kwargs):
+        """Initialize a List supporting legacy positional arguments."""
+        if elements is not None and 'elements' not in kwargs:
+            kwargs['elements'] = elements
+        super().__init__(**kwargs)
 
     def promote(self, other: MathValue) -> MathValue:
         """Lists don't promote to other types."""
@@ -212,23 +214,26 @@ class List(MathValue):
         return List([abs(el) for el in self.elements])
 
 
-class String(MathValue):
+class String(BaseModel, MathValue):
     """
     String value (for answer checking, labels, etc.).
 
     Reference: lib/Value/String.pm
     """
 
-    type_precedence = TypePrecedence.STRING
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
-    def __init__(self, value: str):
-        """
-        Initialize a String.
+    type_precedence: ClassVar[TypePrecedence] = TypePrecedence.STRING
+    value: str
 
-        Args:
-            value: String value
-        """
-        self.value = value
+    def __str__(self) -> str:
+        return self.value
+
+    def __init__(self, value: str | None = None, **kwargs):
+        """Initialize a String supporting legacy positional arguments."""
+        if value is not None and 'value' not in kwargs:
+            kwargs['value'] = value
+        super().__init__(**kwargs)
 
     def promote(self, other: MathValue) -> MathValue:
         """Strings don't promote."""
@@ -243,7 +248,6 @@ class String(MathValue):
         return self.value == other.value
 
     def to_string(self) -> str:
-        """Convert to string."""
         return self.value
 
     def to_tex(self) -> str:
