@@ -13,14 +13,15 @@ from pydantic import BaseModel, ConfigDict, Field
 from .value import MathValue, ToleranceMode, TypePrecedence
 
 
-class List(BaseModel, MathValue):
+class List(MathValue):
     """
     List/sequence of MathValue elements.
 
     Reference: lib/Value/List.pm
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True, validate_assignment=True)
 
     type_precedence: ClassVar[TypePrecedence] = TypePrecedence.LIST
     elements: list[MathValue] = Field(default_factory=list)
@@ -59,7 +60,7 @@ class List(BaseModel, MathValue):
                 return el.to_string()
             else:
                 return str(el)
-        
+
         elements_str = ", ".join(elem_to_string(el) for el in self.elements)
         return f"[{elements_str}]"
 
@@ -72,7 +73,7 @@ class List(BaseModel, MathValue):
                 return el.to_tex()
             else:
                 return str(el)
-        
+
         elements_str = ", ".join(elem_to_tex(el) for el in self.elements)
         return f"\\left[{elements_str}\\right]"
 
@@ -150,7 +151,8 @@ class List(BaseModel, MathValue):
         if isinstance(other, List):
             # Element-wise multiplication
             if len(self.elements) != len(other.elements):
-                raise ValueError("List dimensions must match for multiplication")
+                raise ValueError(
+                    "List dimensions must match for multiplication")
             return List([el1 * el2 for el1, el2 in zip(self.elements, other.elements)])
         else:
             # Scalar multiplication
@@ -214,14 +216,15 @@ class List(BaseModel, MathValue):
         return List([abs(el) for el in self.elements])
 
 
-class String(BaseModel, MathValue):
+class String(MathValue):
     """
     String value (for answer checking, labels, etc.).
 
     Reference: lib/Value/String.pm
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True, validate_assignment=True)
 
     type_precedence: ClassVar[TypePrecedence] = TypePrecedence.STRING
     value: str
@@ -337,3 +340,4 @@ class String(BaseModel, MathValue):
     def __abs__(self) -> MathValue:
         """Absolute value not supported."""
         raise TypeError("String does not support absolute value")
+

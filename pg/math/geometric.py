@@ -18,7 +18,7 @@ from .numeric import Real
 from .value import MathValue, ToleranceMode, TypePrecedence
 
 
-class Point(BaseModel, MathValue):
+class Point(MathValue):
     """
     Point in n-dimensional space.
 
@@ -289,7 +289,7 @@ class Point(BaseModel, MathValue):
         return Real(math.sqrt(sum_sq))
 
 
-class Vector(BaseModel, MathValue):
+class Vector(MathValue):
     """
     Vector in n-dimensional space.
 
@@ -707,7 +707,7 @@ class Vector(BaseModel, MathValue):
         return self.norm()
 
 
-class Matrix(BaseModel, MathValue):
+class Matrix(MathValue):
     """
     Matrix (2D array) with matrix operations.
 
@@ -1104,4 +1104,5 @@ def norm(obj: Vector | Point) -> Real:
         return obj.norm()
     else:
         raise TypeError(f"norm() requires a Vector or Point, got {type(obj)}")
+
 

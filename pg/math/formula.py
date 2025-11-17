@@ -74,7 +74,7 @@ class CMPWrapper:
         return checker.withPostFilter(filter_function)
 
 
-class Formula(BaseModel, MathValue):
+class Formula(MathValue):
     """
     Formula represents a mathematical expression with deferred evaluation.
 
@@ -1106,3 +1106,4 @@ class Formula(BaseModel, MathValue):
         which preprocessor converts to: f['test_points'] = [[1], [2]]
         """
         setattr(self, key, value)
+

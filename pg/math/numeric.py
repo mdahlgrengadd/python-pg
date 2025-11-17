@@ -95,7 +95,7 @@ def _safe_eval_math_expression(expr: str) -> float:
         raise ValueError(f"Could not evaluate expression '{expr}': {e}") from e
 
 
-class Real(BaseModel, MathValue):
+class Real(MathValue):
     """
     Real number value.
 
@@ -434,7 +434,7 @@ class Real(BaseModel, MathValue):
         return self.answer_checker(**options)
 
 
-class Complex(BaseModel, MathValue):
+class Complex(MathValue):
     """
     Complex number value.
 
@@ -723,7 +723,7 @@ class Complex(BaseModel, MathValue):
 
 
 
-class Infinity(BaseModel, MathValue):
+class Infinity(MathValue):
     """
     Infinity value.
 
@@ -931,6 +931,7 @@ def fuzzy_compare(a: float, b: float, tolerance: float, mode: str) -> bool:
 
     else:
         raise ValueError(f"Unknown tolerance mode: {mode}")
+
 
 
 

@@ -16,6 +16,8 @@ from abc import ABC, abstractmethod
 from enum import IntEnum
 from typing import Any, ClassVar
 
+from pydantic import BaseModel, ConfigDict
+
 
 class TypePrecedence(IntEnum):
     """
@@ -49,8 +51,9 @@ class ToleranceMode:
     SIGFIGS = "sigfigs"  # Significant figures
 
 
-class MathValue(ABC):
+class MathValue(BaseModel, ABC):
     """
+
     Base class for all mathematical value objects.
 
     Provides:
@@ -63,10 +66,11 @@ class MathValue(ABC):
     - type_precedence: Class variable defining promotion order
     - All abstract methods
 
-    Note: Concrete subclasses should inherit from both BaseModel and MathValue,
-    e.g., `class Real(BaseModel, MathValue):`. MathValue itself is abstract
-    and does not inherit from BaseModel to avoid MRO conflicts.
+    Note: Concrete subclasses should inherit directly from MathValue
+    (which itself inherits from BaseModel), e.g., `class Real(MathValue):`.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True, extra='allow')
 
     # Type precedence for promotion (must be set by subclasses)
     type_precedence: ClassVar[TypePrecedence]

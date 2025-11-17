@@ -17,7 +17,7 @@ from .value import MathValue, ToleranceMode, TypePrecedence
 
 
 
-class Interval(BaseModel, MathValue):
+class Interval(MathValue):
     """
     Mathematical interval with open/closed endpoints.
 
@@ -423,7 +423,7 @@ class Interval(BaseModel, MathValue):
 
 
 
-class Set(BaseModel, MathValue):
+class Set(MathValue):
     """
     Finite set of elements.
 
@@ -656,7 +656,7 @@ class Set(BaseModel, MathValue):
 
 
 
-class Union(BaseModel, MathValue):
+class Union(MathValue):
     """
     Union of intervals and/or sets.
 
@@ -866,3 +866,4 @@ class Union(BaseModel, MathValue):
     def __abs__(self) -> MathValue:
         """Absolute value not supported."""
         raise TypeError("Union does not support absolute value")
+

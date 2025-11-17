@@ -2,14 +2,13 @@
 
 from typing import ClassVar
 
-from pydantic import BaseModel
 
 from pg.math.collections import List as MathList
 from pg.math.numeric import Complex, Real
 from pg.math.value import MathValue, TypePrecedence
 
 
-class DummyValue(BaseModel, MathValue):
+class DummyValue(MathValue):
     """Simple concrete MathValue for testing abstract helpers."""
 
     type_precedence: ClassVar[TypePrecedence] = TypePrecedence.NUMBER
@@ -113,3 +112,5 @@ class TestMathValueUtilities:
         assert isinstance(real_true, Real)
         assert real_true.value == 1.0
         assert real_false.value == 0.0
+
+

@@ -59,7 +59,7 @@ def reduce_fraction(num: int, den: int) -> tuple[int, int]:
     return (num // g, den // g)
 
 
-class Fraction(BaseModel, MathValue):
+class Fraction(MathValue):
     """
     Fraction represents a rational number as numerator/denominator.
 
@@ -562,3 +562,4 @@ def continued_fraction(x: float, max_denominator: int = 10**8) -> tuple[int, int
             return (h0, k0)
 
     return (h1, k1)
+

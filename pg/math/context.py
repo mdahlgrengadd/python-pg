@@ -14,6 +14,12 @@ from copy import deepcopy
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 
 
+# Sentinel used to detect when Context() is called without an explicit name.
+# This mirrors Perl's Context() helper which returns the current context when
+# no arguments are provided.
+_UNSPECIFIED_CONTEXT = object()
+
+
 class VariableManager(BaseModel):
     """Manages variables available in the context."""
 
@@ -520,35 +526,37 @@ class Context(BaseModel):
     flags: ContextFlags | None = None
     parens: ParensManager | None = None
 
-    def __new__(cls, name: str = 'Numeric'):
+    def __new__(cls, name: str | object = _UNSPECIFIED_CONTEXT, **kwargs):
         """
         Create or get a Context.
 
-        When called with default 'Numeric', returns the current global context
-        (matching Perl's Context() behavior).
+        When called without a name (Context()), returns the current global context.
         When called with a specific context name, switches to or creates that context.
 
         Args:
-            name: Context name ('Numeric' returns current, others create/switch)
+            name: Context name to activate (None = current context)
 
         Returns:
             A Context instance
         """
-        # If called with default 'Numeric', return the current context (Perl-like behavior)
-        # This matches Perl's Context() which returns the current context
-        # We check for '__skip_singleton' in kwargs to allow internal creation
+        # Allow internal callers (like _create_context) to bypass the singleton
+        # behavior so we can construct fresh Context objects for the registry.
+        skip_singleton = bool(kwargs.pop('_skip_singleton', False))
+        if skip_singleton:
+            return object.__new__(cls)
+
         import sys
+
         frame = sys._getframe(1)
         calling_func = frame.f_code.co_name
+        caller_module = frame.f_globals.get('__name__', '')
+        if calling_func == '_create_context' or caller_module.startswith('pydantic.'):
+            return object.__new__(cls)
 
-        # Skip singleton behavior when called from _create_context
-        if calling_func == '_create_context' or name != 'Numeric':
-            # Create a new instance
-            instance = object.__new__(cls)
-            return instance
+        if name is _UNSPECIFIED_CONTEXT:
+            return get_context()
 
-        # For Context() with default name, return current context
-        return get_context()
+        return get_context(name)
 
     def __init__(self, name: str = 'Numeric', **kwargs):
         """
@@ -1117,7 +1125,7 @@ def get_context(name: Optional[str] = None) -> Context:
 def _create_context(name: str) -> Context:
     """Create a new context by name (internal - creates actual Context instance)."""
     # Direct instantiation to avoid recursion
-    ctx = Context.__new__(Context)
+    ctx = Context.__new__(Context, _skip_singleton=True)
     ctx.__init__(name)
     _contexts[name] = ctx
     return ctx

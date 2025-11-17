@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, StrictBool
 
 
 class AnswerResult(BaseModel):
@@ -45,7 +45,7 @@ class AnswerResult(BaseModel):
 
     # Core fields (always present)
     score: float = 0.0
-    correct: bool = False
+    correct: StrictBool = False
 
     # Student/correct answer fields
     student_answer: str = ""
@@ -82,6 +82,15 @@ class AnswerResult(BaseModel):
         self.score = max(0.0, min(1.0, self.score))
 
         # Sync correct flag with score (1.0 = correct)
+        if self.score >= 1.0:
+            self.correct = True
+        elif self.score <= 0.0:
+            self.correct = False
+
+        # Backfill original answer if we only captured a parsed version
+        if not self.original_student_answer and self.student_answer:
+            self.original_student_answer = self.student_answer
+
         if self.score >= 1.0:
             self.correct = True
         elif self.score <= 0.0:
@@ -147,7 +156,9 @@ class AnswerResult(BaseModel):
 
     def is_blank(self) -> bool:
         """Check if student answer is blank."""
-        return not self.original_student_answer.strip()
+        return not (
+            self.original_student_answer.strip() or self.student_answer.strip()
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """
