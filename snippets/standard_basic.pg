@@ -1,0 +1,23 @@
+DOCUMENT();
+loadMacros("PGstandard.pl");
+TEXT(beginproblem());
+
+# Basic text and formatting
+$a = random(2, 9, 1);
+$b = random(2, 9, 1);
+$ans = $a + $b;
+
+BEGIN_TEXT
+This is a basic problem using PGstandard.pl.$BR
+$BR
+What is \($a + $b\)?$BR
+Answer: \{ans_rule(10)\}$BR
+$BR
+${BBOLD}Bold text${EBOLD}$BR
+${BITALIC}Italic text${EITALIC}$BR
+END_TEXT
+
+ANS(num_cmp($ans));
+
+ENDDOCUMENT();
+

@@ -20,6 +20,14 @@ wheels/
 .installed.cfg
 *.egg
 
+# Dot files and folders
+.*
+!.gitignore
+!.gitattributes
+
+# Claude AI
+.claude/
+
 # Virtual environments
 .venv/
 venv/

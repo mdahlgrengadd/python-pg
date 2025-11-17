@@ -1,0 +1,44 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "MathObjects.pl", "PGML.pl");
+TEXT(beginproblem());
+
+Context("Numeric");
+
+$price = random(50, 200, 10);
+$tax_rate = 0.08;
+$tax = $price * $tax_rate;
+$total = $price + $tax;
+
+$discount_rate = random(10, 30, 5);
+$discount = $total * $discount_rate / 100;
+$final_price = $total - $discount;
+
+BEGIN_PGML
+## Realistic Problem: Shopping
+
+You purchase an item for [`\$[$price]`].
+
+a) The sales tax rate is 8%. What is the tax amount? 
+   [`\$`][_____]{$tax}
+
+b) What is the total after tax? 
+   [`\$`][_____]{$total}
+
+c) You have a [$discount_rate]% off coupon. What is the discount amount? 
+   [`\$`][_____]{$discount}
+
+d) What is the final price? 
+   [`\$`][_____]{$final_price}
+
+---
+
+### Explanation
+
+* Tax: [`[$price] \times 0.08 = \$[$tax]`]
+* Total with tax: [`[$price] + [$tax] = \$[$total]`]
+* Discount: [`[$total] \times [$discount_rate]\% = \$[$discount]`]
+* Final price: [`[$total] - [$discount] = \$[$final_price]`]
+END_PGML
+
+ENDDOCUMENT();
+

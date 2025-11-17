@@ -10,14 +10,21 @@ Reference: lib/Context.pm in legacy Perl codebase
 import math
 from typing import Dict, Any, Optional, Set
 from copy import deepcopy
-from dataclasses import dataclass
+
+from pydantic import BaseModel, ConfigDict, PrivateAttr, Field
 
 
-class VariableManager:
+# Sentinel used to detect when Context() is called without an explicit name.
+# This mirrors Perl's Context() helper which returns the current context when
+# no arguments are provided.
+_UNSPECIFIED_CONTEXT = object()
+
+
+class VariableManager(BaseModel):
     """Manages variables available in the context."""
 
-    def __init__(self):
-        self._variables: Dict[str, dict] = {}  # name -> {type, options}
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+    _variables: Dict[str, dict] = PrivateAttr(default_factory=dict)
 
     def add(self, name: str = None, type_: str = 'Real', **kwargs):
         """
@@ -100,7 +107,7 @@ class VariableManager:
     def copy(self):
         """Create a copy of this manager."""
         new_mgr = VariableManager()
-        new_mgr._variables = {k: v.copy() for k, v in self._variables.items()}
+        new_mgr._variables = {k: {'type': v['type'], 'options': v['options'].copy()} for k, v in self._variables.items()}
         return new_mgr
 
     def __getitem__(self, key: str) -> Any:
@@ -132,11 +139,11 @@ class VariableManager:
         setattr(self, key, value)
 
 
-class ConstantManager:
+class ConstantManager(BaseModel):
     """Manages constants available in the context."""
 
-    def __init__(self):
-        self._constants: Dict[str, Any] = {}
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+    _constants: Dict[str, Any] = PrivateAttr(default_factory=dict)
 
     def add(self, name: str = None, value: Any = None, **kwargs):
         """
@@ -182,11 +189,11 @@ class ConstantManager:
         return name in self._constants
 
 
-class FunctionManager:
+class FunctionManager(BaseModel):
     """Manages functions available in the context."""
 
-    def __init__(self):
-        self._functions: Dict[str, dict] = {}
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+    _functions: Dict[str, dict] = PrivateAttr(default_factory=dict)
 
     def add(self, name: str, options=None, **kwargs):
         """Add a function to the context.
@@ -265,11 +272,11 @@ class FunctionManager:
         return new_mgr
 
 
-class OperatorManager:
+class OperatorManager(BaseModel):
     """Manages operators available in the context."""
 
-    def __init__(self):
-        self._operators: Dict[str, dict] = {}
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+    _operators: Dict[str, dict] = PrivateAttr(default_factory=dict)
 
     def add(self, name: str, **options):
         """Add an operator to the context."""
@@ -307,19 +314,21 @@ class OperatorManager:
         return new_mgr
 
 
-@dataclass
-class StringConfig:
+class StringConfig(BaseModel):
     """Configuration for a string value in the context."""
+
+    model_config = ConfigDict(validate_assignment=True)
+
     value: str
     alias: str | None = None
     case_sensitive: bool = False
 
 
-class StringsManager:
+class StringsManager(BaseModel):
     """Manager for string values in a context."""
 
-    def __init__(self):
-        self._strings: Dict[str, StringConfig] = {}
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+    _strings: Dict[str, StringConfig] = PrivateAttr(default_factory=dict)
 
     def add(self, name=None, config=None, **strings: dict) -> None:
         """
@@ -367,12 +376,27 @@ class StringsManager:
     def copy(self):
         """Create a copy of this manager."""
         new_mgr = StringsManager()
-        new_mgr._strings = {k: StringConfig(v.value, v.alias, v.case_sensitive)
-                            for k, v in self._strings.items()}
+        new_mgr._strings = {
+            k: StringConfig(value=v.value, alias=v.alias, case_sensitive=v.case_sensitive)
+            for k, v in self._strings.items()
+        }
         return new_mgr
 
 
-class ContextFlags:
+def _default_flag_settings() -> Dict[str, Any]:
+    """Default flag values for newly created contexts."""
+    return {
+        'tolerance': 0.001,
+        'tolType': 'relative',
+        'zeroLevel': 1e-14,
+        'zeroLevelTol': 1e-12,
+        'reduceConstants': 1,
+        'reduceConstantFunctions': 1,
+        # Additional polynomial flags are configured per specialized context
+    }
+
+
+class ContextFlags(BaseModel):
     """
     Manages context flags/options.
 
@@ -380,21 +404,8 @@ class ContextFlags:
     Reference: lib/Context/Flags.pm
     """
 
-    def __init__(self):
-        self._flags: Dict[str, Any] = {
-            # Comparison tolerances
-            'tolerance': 0.001,
-            'tolType': 'relative',
-            'zeroLevel': 1e-14,
-            'zeroLevelTol': 1e-12,
-
-            # Reduction flags
-            'reduceConstants': 1,
-            'reduceConstantFunctions': 1,
-
-            # Polynomial validation flags (Week 5) - not set by default
-            # These are only set when using specialized contexts
-        }
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+    _flags: Dict[str, Any] = PrivateAttr(default_factory=_default_flag_settings)
 
     def set(self, **kwargs):
         """Set flag values."""
@@ -424,7 +435,7 @@ class AutovivDict(dict):
         return super().__getitem__(key)
 
 
-class ParensManager:
+class ParensManager(BaseModel):
     """
     Manages parentheses configuration in the context.
 
@@ -432,8 +443,8 @@ class ParensManager:
     (e.g., for points, vectors, intervals, lists).
     """
 
-    def __init__(self):
-        self._parens: Dict[str, dict] = {}
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+    _parens: Dict[str, dict] = PrivateAttr(default_factory=dict)
 
     def set(self, paren_type: str, **options):
         """
@@ -463,7 +474,9 @@ class ParensManager:
         return new_mgr
 
 
-class Context:
+class Context(BaseModel):
+    _storage: Dict[str, Any] = PrivateAttr(default_factory=AutovivDict)
+    _initialized: bool = PrivateAttr(default=False)
     """
     Context for parsing and evaluating mathematical expressions.
 
@@ -474,88 +487,91 @@ class Context:
     Reference: lib/Context.pm (lines 1-500) in legacy Perl codebase
     """
 
-    def __new__(cls, name: str = 'Numeric'):
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    name: str = "Numeric"
+    variables: VariableManager = Field(default_factory=VariableManager)
+    constants: ConstantManager = Field(default_factory=ConstantManager)
+    functions: FunctionManager = Field(default_factory=FunctionManager)
+    operators: OperatorManager = Field(default_factory=OperatorManager)
+    strings: StringsManager = Field(default_factory=StringsManager)
+    flags: ContextFlags = Field(default_factory=ContextFlags)
+    parens: ParensManager = Field(default_factory=ParensManager)
+
+    def __new__(cls, name: str | object = _UNSPECIFIED_CONTEXT, **kwargs):
         """
         Create or get a Context.
 
-        When called with default 'Numeric', returns the current global context
-        (matching Perl's Context() behavior).
+        When called without a name (Context()), returns the current global context.
         When called with a specific context name, switches to or creates that context.
 
         Args:
-            name: Context name ('Numeric' returns current, others create/switch)
+            name: Context name to activate (None = current context)
 
         Returns:
             A Context instance
         """
-        # If called with default 'Numeric', return the current context (Perl-like behavior)
-        # This matches Perl's Context() which returns the current context
-        # We check for '__skip_singleton' in kwargs to allow internal creation
+        # Allow internal callers (like _create_context) to bypass the singleton
+        # behavior so we can construct fresh Context objects for the registry.
+        skip_singleton = bool(kwargs.pop('_skip_singleton', False))
+        if skip_singleton:
+            return object.__new__(cls)
+
         import sys
+
         frame = sys._getframe(1)
         calling_func = frame.f_code.co_name
+        caller_module = frame.f_globals.get('__name__', '')
+        if calling_func == '_create_context' or caller_module.startswith('pydantic.'):
+            return object.__new__(cls)
 
-        # Skip singleton behavior when called from _create_context
-        if calling_func == '_create_context' or name != 'Numeric':
-            # Create a new instance
-            instance = object.__new__(cls)
-            return instance
+        if name is _UNSPECIFIED_CONTEXT:
+            return get_context()
 
-        # For Context() with default name, return current context
-        return get_context()
+        return get_context(name)
 
-    def __init__(self, name: str = 'Numeric'):
+    def __init__(self, name: str = 'Numeric', **kwargs):
         """
         Create a new Context or initialize an existing one.
 
         Args:
             name: Context name (Numeric, Complex, Point, Vector, Interval, LimitedPolynomial, etc.)
         """
-        # If this context has already been initialized, skip re-initialization
-        if hasattr(self, 'name'):
+        if getattr(self, '_initialized', False):
             return
 
-        self.name = name
-        self.variables = VariableManager()
-        self.constants = ConstantManager()
-        self.functions = FunctionManager()
-        self.operators = OperatorManager()
-        self.strings = StringsManager()
-        self.flags = ContextFlags()
-        self.parens = ParensManager()
-
-        # General storage for Perl-style hash access
-        # Allows Context()['key'] and nested Context()['error']['msg']
-        # Use AutovivDict for automatic nested dict creation
-        self._storage: Dict[str, Any] = AutovivDict()
+        kwargs.setdefault('name', name)
+        super().__init__(**kwargs)
+        self._initialized = True
+        self._storage = AutovivDict()
 
         # Initialize based on context name
-        if name == 'Numeric':
+        if self.name == 'Numeric':
             self._init_numeric()
-        elif name == 'Complex':
+        elif self.name == 'Complex':
             self._init_complex()
-        elif name == 'Point':
+        elif self.name == 'Point':
             self._init_point()
-        elif name == 'Vector':
+        elif self.name == 'Vector':
             self._init_vector()
-        elif name == 'Interval':
+        elif self.name == 'Interval':
             self._init_interval()
-        elif name == 'Fraction':
+        elif self.name == 'Fraction':
             self._init_fraction()
-        elif name == 'Fraction-NoDecimals':
+        elif self.name == 'Fraction-NoDecimals':
             self._init_fraction_no_decimals()
-        elif name == 'LimitedFraction':
+        elif self.name == 'LimitedFraction':
             self._init_limited_fraction()
-        elif name == 'LimitedProperFraction':
+        elif self.name == 'LimitedProperFraction':
             self._init_limited_proper_fraction()
-        elif name.startswith('LimitedPolynomial'):
-            self._init_limited_polynomial(strict=('-Strict' in name))
-        elif name.startswith('PolynomialFactors'):
-            self._init_polynomial_factors(strict=('-Strict' in name))
-        elif name == 'TrigDegrees':
+        elif self.name.startswith('LimitedPolynomial'):
+            self._init_limited_polynomial(strict=('-Strict' in self.name))
+        elif self.name.startswith('PolynomialFactors'):
+            self._init_polynomial_factors(strict=('-Strict' in self.name))
+        elif self.name == 'TrigDegrees':
             self._init_trig_degrees()
-        elif name == 'Units' or name == 'LimitedUnits':
-            self._init_units(limited=(name == 'LimitedUnits'))
+        elif self.name == 'Units' or self.name == 'LimitedUnits':
+            self._init_units(limited=(self.name == 'LimitedUnits'))
 
     def _init_numeric(self):
         """Initialize Numeric context with standard operations."""
@@ -903,16 +919,23 @@ class Context:
         Returns:
             New Context instance with copied settings
         """
-        new_context = Context.__new__(Context)
-        new_context.name = name if name is not None else self.name
-        new_context.variables = self.variables.copy()
-        new_context.constants = self.constants.copy()
-        new_context.functions = self.functions.copy()
-        new_context.operators = self.operators.copy()
-        new_context.strings = self.strings.copy()
-        new_context.flags = self.flags.copy()
-        new_context.parens = self.parens.copy()
-        new_context._storage = deepcopy(self._storage)
+        # Create new context using model_construct to bypass validation
+        # and manually copy all managers to ensure independence
+        new_context = Context.model_construct(
+            name=name if name is not None else self.name,
+            variables=self.variables.copy() if self.variables else VariableManager(),
+            constants=self.constants.copy() if self.constants else ConstantManager(),
+            functions=self.functions.copy() if self.functions else FunctionManager(),
+            operators=self.operators.copy() if self.operators else OperatorManager(),
+            strings=self.strings.copy() if self.strings else StringsManager(),
+            flags=self.flags.copy() if self.flags else ContextFlags(),
+            parens=self.parens.copy() if self.parens else ParensManager(),
+        )
+        if hasattr(self, '_storage'):
+            new_context._storage = deepcopy(self._storage)
+        else:
+            new_context._storage = AutovivDict()
+        new_context._initialized = True
         return new_context
 
     def withUnitsFor(self, *categories):
@@ -1058,7 +1081,7 @@ def get_context(name: Optional[str] = None) -> Context:
 def _create_context(name: str) -> Context:
     """Create a new context by name (internal - creates actual Context instance)."""
     # Direct instantiation to avoid recursion
-    ctx = Context.__new__(Context)
+    ctx = Context.__new__(Context, _skip_singleton=True)
     ctx.__init__(name)
     _contexts[name] = ctx
     return ctx
@@ -1072,3 +1095,7 @@ def get_current_context() -> Context:
         Current context (creates Numeric if none exists)
     """
     return get_context()
+
+
+
+

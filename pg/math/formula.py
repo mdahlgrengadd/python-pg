@@ -1,1082 +1,813 @@
 """
-Formula type for the WeBWorK PG MathObjects system.
+Enhanced Formula with complete Value::Formula.pm parity.
 
-Formula wraps an AST (Abstract Syntax Tree) for deferred evaluation, providing:
-- Variable substitution
-- Differentiation (using SymPy)
-- Simplification/reduction
-- Multiple evaluation modes
-- Multiple output formats
-- Test point evaluation for comparison
-- Python function generation
-- Domain checking
+Adds:
+- Advanced test point generation with granularity
+- Adaptive parameter system
+- Test value caching
+- Domain checking with undefined points
+- Python function generation with caching
+- Enhanced differentiation
 
-Reference: lib/Value/Formula.pm (1,156 lines) in legacy Perl codebase
-
-NEW FEATURES FOR PARITY:
-- create_random_points(): Generate random test points for formula testing
-- create_point_values(): Evaluate formula at test points with error handling
-- python_function(): Convert formula to executable Python function
-- Domain checking with undefined point handling
-- Adaptive parameter support
-- Full comparison with test point evaluation
-- cmp(): Built-in answer checker
+Reference: Value::Formula.pm (1,156 lines)
 """
 
 from __future__ import annotations
-from .value import MathValue, ToleranceMode, TypePrecedence
 
+import math
 import random
-import types
 from typing import Any, Callable
 
-_SYMPY_TRANSFORMATIONS: tuple = ()
+from pydantic import ConfigDict, Field, PrivateAttr
+
 try:
     import sympy as sp
-    from sympy.parsing.sympy_parser import (
-        parse_expr,
-        implicit_multiplication_application,
-        standard_transformations,
-    )
+    from sympy.parsing.sympy_parser import parse_expr
 
-    _SYMPY_TRANSFORMATIONS = (
-        standard_transformations + (implicit_multiplication_application,)
-    )
     SYMPY_AVAILABLE = True
 except ImportError:
     SYMPY_AVAILABLE = False
 
+from .formula_base import FormulaBase
+from .value import MathValue, ToleranceMode
 
-class CMPWrapper:
+
+# UNDEF sentinel for undefined points
+class UNDEF:
+    """Sentinel for undefined points in domain."""
+    def __repr__(self) -> str:
+        return "UNDEF"
+
+
+UNDEF_VALUE = UNDEF()
+
+
+class Formula(FormulaBase):
     """
-    Wrapper for .cmp that works as both property access and method call.
+    Enhanced Formula with complete feature set.
 
-    Handles Perl idiom where ->cmp can be used without parentheses and
-    chained with ->withPostFilter.
-    """
-
-    def __init__(self, formula, **default_options):
-        self.formula = formula
-        self.default_options = default_options
-
-    def __call__(self, **options):
-        """Call as cmp() to get answer checker."""
-        from .answer_checker import FormulaAnswerChecker
-        merged_options = {**self.default_options, **options}
-        return FormulaAnswerChecker(self.formula, **merged_options)
-
-    def withPostFilter(self, filter_function):
-        """Chain with withPostFilter like Perl ->cmp->withPostFilter."""
-        from .answer_checker import FormulaAnswerChecker
-        checker = FormulaAnswerChecker(self.formula, **self.default_options)
-        return checker.withPostFilter(filter_function)
-
-
-class Formula(MathValue):
-    """
-    Formula represents a mathematical expression with deferred evaluation.
-
-    Unlike numeric types (Real, Complex) which have immediate values, Formula
-    stores an expression that can be:
-    - Evaluated with variable bindings
-    - Differentiated with respect to variables
-    - Simplified/reduced
-    - Substituted with other values
-
-    Examples:
-        >>> f = Formula("x^2 + 2*x + 1")
-        >>> f.eval(x=3)  # Returns Real(16)
-        >>> f.diff("x")  # Returns Formula("2*x + 2")
-        >>> f.substitute("x", Real(5))  # Returns Formula("36")
+    Reference: Value::Formula.pm
     """
 
-    type_precedence = TypePrecedence.FORMULA
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        validate_assignment=True,
+        extra='allow',
+    )
+
+    # Pydantic fields for enhanced features
+    granularity: int = Field(default=1000, gt=0, description="Granularity for point distribution")
+    check_undefined_points: bool = Field(default=False, description="Track undefined points in domain")
+    max_undefined: int | None = Field(default=None, description="Max allowed undefined points")
+    parameters: list[str] = Field(default_factory=list, description="Parameter names for adaptive solving")
+
+    # Private attributes for internal state
+    _test_adapt: list[MathValue] | None = PrivateAttr(default=None)
+    _param_func: Callable | None = PrivateAttr(default=None)
+    _python_func: Callable | None = PrivateAttr(default=None)
+    _func_cache: dict[tuple, Callable] = PrivateAttr(default_factory=dict)
+    _options: dict[str, Any] = PrivateAttr(default_factory=dict)
+    _parameters_values: list[float] | None = PrivateAttr(default=None)
+    _parameters_dict: dict[str, float] | None = PrivateAttr(default=None)
 
     def __init__(
         self,
         expression: str | Any,
         variables: list[str] | None = None,
         context: Any | None = None,
+        # Test point configuration
         test_points: list[list[float]] | None = None,
         num_test_points: int = 5,
         limits: dict[str, tuple[float, float]] | None = None,
+        granularity: int = 1000,
+        # Domain checking
+        check_undefined_points: bool = False,
+        max_undefined: int | None = None,
+        # Adaptive parameters
+        parameters: list[str] | None = None,
+        # Other options
+        **options: Any,
     ):
         """
-        Create a Formula from an expression.
+        Initialize enhanced formula.
 
         Args:
-            expression: Mathematical expression (string or AST node or SymPy expr)
-            variables: List of variable names in the expression
-            context: Mathematical context (for parsing and evaluation)
-            test_points: Pre-specified test points for comparison (optional)
-            num_test_points: Number of random test points to generate (default: 5)
-            limits: Variable limits for random test point generation {var: (min, max)}
+            expression: Mathematical expression
+            variables: Variable names
+            context: Mathematical context
+            test_points: Pre-specified test points
+            num_test_points: Number of random test points
+            limits: Variable limits {var: (min, max)}
+            granularity: Granularity for point distribution
+            check_undefined_points: Track undefined points
+            max_undefined: Max allowed undefined points
+            parameters: Parameter names for adaptive solving
+            **options: Additional options
         """
-        self.expression = expression
-        # Extract variables from expression if not provided
-        if variables is None or (isinstance(variables, list) and len(variables) == 0):
-            if isinstance(expression, str):
-                # Extract variables from the expression string
-                import re
-                # Common function names to exclude
-                function_names = {'sin', 'cos', 'tan', 'sec', 'csc', 'cot', 'asin', 'acos', 'atan', 
-                                 'sinh', 'cosh', 'tanh', 'log', 'ln', 'exp', 'sqrt', 'abs', 'sgn', 
-                                 'step', 'fact', 'pi', 'e', 'E', 'PI'}
-                # Find all word-like tokens
-                var_pattern = r'\b([a-zA-Z][a-zA-Z0-9_]*)\b'
-                found_vars = set(re.findall(var_pattern, expression))
-                # Filter out function names and numbers
-                extracted_vars = [v for v in found_vars if v not in function_names and not v.replace('_', '').isdigit()]
-                if extracted_vars:
-                    variables = extracted_vars
-                elif context is not None:
-                    # Fallback to context variables
-                    variables = context.variables.list()
-                else:
-                    variables = []
-        self.variables = variables or []
-        self.context = context
+        # Call Pydantic __init__ with enhanced fields
+        super().__init__(
+            expression=expression,
+            variables=variables,
+            context=context,
+            test_points=test_points,
+            num_test_points=num_test_points,
+            limits=limits,
+            granularity=granularity,
+            check_undefined_points=check_undefined_points,
+            max_undefined=max_undefined,
+            parameters=parameters or [],
+        )
 
-        # Test point configuration (for formula comparison)
-        self._test_points = test_points
-        self._test_values = None
-        self._num_test_points = num_test_points
-        self._limits = limits or {}
-
-        # Cached Python function for evaluation
+        # Initialize private attributes
+        self._options = options
+        self._test_adapt = None
+        self._param_func = None
         self._python_func = None
+        self._func_cache = {}
+        self._parameters_values = None
+        self._parameters_dict = None
 
-        # Domain checking flags
-        self.domain_mismatch = False
-        self.check_undefined_points = False
-        self.max_undefined = num_test_points
+        # Override Formula's defaults with enhanced field values
+        # (Formula sets these to defaults, but we want to preserve our values)
+        self.check_undefined_points = check_undefined_points
+        if max_undefined is None:
+            self.max_undefined = num_test_points
+        else:
+            self.max_undefined = max_undefined
 
-        # Check for assignment expressions if context has assignments enabled
-        # This should happen before SymPy parsing
-        if isinstance(expression, str) and context is not None:
-            if hasattr(context, 'has_assignment_operator') and context.has_assignment_operator():
-                if '=' in expression:
-                    # Try to parse as assignment
-                    from pg.math.compute import _parse_assignment
-                    assignment_obj = _parse_assignment(expression, context)
-                    if assignment_obj is not None:
-                        # This is an assignment - copy assignment attributes
-                        self._assignment_value = assignment_obj._assignment_value
-                        self._is_assignment = True
-                        # Continue with normal Formula initialization for the expression string
-                        # The assignment_value will be used for comparison
-        
-        # If expression is a string and SymPy is available, parse it
-        if isinstance(expression, str) and SYMPY_AVAILABLE:
+        # Rebuild SymPy expression with parameters included
+        if isinstance(expression, str) and SYMPY_AVAILABLE and self.parameters:
             try:
-                # Preprocess: convert Perl ^ operator to Python ** operator
-                # Only convert ^ when it appears to be used for exponentiation:
-                # After a number, variable, or closing paren/bracket: 2^3, x^2, (x+1)^2, [a]^2
-                import re
-                processed_expr = re.sub(r'([0-9a-zA-Z_\)\]])\^', r'\1**', expression)
-
-                # Build local_dict with variables as symbols and constants
-                local_dict = {var: sp.Symbol(var) for var in self.variables}
+                # Parse with both variables and parameters as symbols
+                all_vars = (variables or []) + self.parameters
+                local_dict = {var: sp.Symbol(var) for var in all_vars}
                 # Add mathematical constants
                 local_dict['e'] = sp.E
                 local_dict['pi'] = sp.pi
                 local_dict['E'] = sp.E
                 local_dict['PI'] = sp.pi
-                self._sympy_expr = parse_expr(
-                    processed_expr,
-                    transformations=_SYMPY_TRANSFORMATIONS,
+                self._sympy_expr = sp.parse_expr(
+                    expression,
+                    transformations="all",
                     local_dict=local_dict,
                 )
             except Exception:
-                # Fallback: store as string
-                self._sympy_expr = None
-        else:
-            self._sympy_expr = expression if SYMPY_AVAILABLE and isinstance(
-                expression, sp.Expr) else None
-
-        # Validate polynomial form if context requires it
-        if self.context is not None and hasattr(self.context, 'flags'):
-            self._validate_polynomial()
-
-    def _validate_polynomial(self):
-        """Validate polynomial form if required by context."""
-        # Check for LimitedPolynomial validation
-        if self.context.flags.get('limitedPolynomial'):
-            # Import here to avoid circular dependency
-            from .limited_polynomial import validate_polynomial_formula
-
-            is_valid, error = validate_polynomial_formula(self)
-            if not is_valid:
-                raise ValueError(error)
-
-        # Check for PolynomialFactors validation
-        if self.context.flags.get('polynomialFactors'):
-            # Import here to avoid circular dependency
-            from .polynomial_factors import validate_factored_polynomial
-
-            is_valid, error = validate_factored_polynomial(self)
-            if not is_valid:
-                raise ValueError(error)
-
-    def eval(
-        self, **bindings: float | MathValue
-    ) -> MathValue:
-        """
-        Evaluate the formula with variable bindings.
-
-        Args:
-            **bindings: Variable name -> value mappings
-
-        Returns:
-            Result as MathValue (Real, Complex, etc.)
-
-        Example:
-            >>> f = Formula("x^2 + 1")
-            >>> f.eval(x=3)
-            Real(10)
-        """
-        sympy_failed_message: str | None = None
-
-        if self._sympy_expr is not None:
-            sympy_bindings = {}
-            for var, value in bindings.items():
-                if isinstance(value, MathValue):
-                    sympy_bindings[sp.Symbol(var)] = value.to_python()
-                elif isinstance(value, str):
-                    # Parse string values as sympy expressions
-                    try:
-                        # Handle implicit multiplication like '2pi' -> '2*pi'
-                        # Also convert ^ to ** for exponentiation (only when used as exponent)
-                        import re
-                        processed_value = re.sub(r'([0-9a-zA-Z_\)\]])\^', r'\1**', value)
-                        parsed_value = parse_expr(
-                            processed_value,
-                            transformations=_SYMPY_TRANSFORMATIONS,
-                            local_dict={'pi': sp.pi, 'e': sp.E,
-                                        'E': sp.E, 'PI': sp.pi}
-                        )
-                        sympy_bindings[sp.Symbol(var)] = parsed_value
-                    except:
-                        # If parsing fails, use the original value
-                        sympy_bindings[sp.Symbol(var)] = value
-                else:
-                    sympy_bindings[sp.Symbol(var)] = value
-
-            try:
-                result = self._sympy_expr.subs(sympy_bindings)
-            except RecursionError:
-                raise ValueError(
-                    f"SymPy recursion error during substitution of {self.to_string()}"
-                )
-
-            try:
-                numeric_value = float(result)
-                from .numeric import Real
-
-                return Real(numeric_value)
-            except (TypeError, ValueError, RecursionError):
-                sympy_failed_message = (
-                    f"Formula evaluation resulted in symbolic expression: {result}"
-                )
-
-        expr_source = (
-            self.expression if isinstance(
-                self.expression, str) else str(self.expression)
-        )
-
-        try:
-            from pg.parser.parser import Parser
-            from pg.parser.visitors import EvalVisitor
-
-            # Use the formula's context if available, otherwise try to get the current context
-            eval_context = self.context
-            if eval_context is None:
-                try:
-                    from pg.math.context import get_current_context
-                    eval_context = get_current_context()
-                except (ImportError, RuntimeError):
-                    # No current context available
-                    pass
-
-            parser = Parser(eval_context)
-            ast = parser.parse(expr_source)
-
-            eval_bindings = {}
-            for var, value in bindings.items():
-                if isinstance(value, MathValue):
-                    eval_bindings[var] = value.to_python()
-                else:
-                    eval_bindings[var] = value
-
-            visitor = EvalVisitor(eval_bindings, eval_context)
-            result = ast.accept(visitor)
-
-            return MathValue.from_python(result)
-        except ImportError as parser_exc:
-            if sympy_failed_message:
-                raise ValueError(sympy_failed_message) from parser_exc
-            raise RuntimeError(
-                "Cannot evaluate Formula: neither SymPy nor pg_parser available"
-            ) from parser_exc
-        except Exception as parser_exc:
-            if sympy_failed_message:
-                raise ValueError(sympy_failed_message) from parser_exc
-            raise
-
-    @property
-    def reduce(self) -> Formula:
-        """
-        Simplify/reduce the formula.
-
-        In Perl this is called as ->reduce (no parens), so we make it a property.
-
-        Returns:
-            Simplified Formula
-
-        Example:
-            >>> f = Formula("x + x")
-            >>> f.reduce
-            Formula("2*x")
-        """
-        if self._sympy_expr is not None:
-            simplified = sp.simplify(self._sympy_expr)
-            return Formula(simplified, self.variables, self.context)
-        else:
-            # No simplification without SymPy
-            return self
-
-    def substitute(self, **substitutions) -> 'Formula':
-        """
-        Substitute expressions for variables.
-
-        Args:
-            **substitutions: Variable substitutions (e.g., x='2*y', y='t+1')
-
-        Returns:
-            New Formula with substitutions applied
-
-        Example:
-            >>> f = Formula("x^2 + y", ['x', 'y'])
-            >>> f.substitute(x='2*t', y='t+1')
-            Formula("4*t^2 + t + 1")
-        """
-        if self._sympy_expr is not None:
-            subs_dict = {}
-            for var, expr in substitutions.items():
-                # Parse substitution expression
-                if isinstance(expr, str):
-                    # Parse using Compute() to handle string expressions
-                    from .compute import Compute
-                    sub_formula = Compute(expr, self.context)
-                    subs_dict[sp.Symbol(var)] = sub_formula._sympy_expr
-                elif isinstance(expr, Formula):
-                    subs_dict[sp.Symbol(var)] = expr._sympy_expr
-                elif isinstance(expr, (int, float)):
-                    subs_dict[sp.Symbol(var)] = expr
-                else:
-                    # Try to get python value
-                    from .math_value import MathValue
-                    if isinstance(expr, MathValue):
-                        python_value = expr.to_python()
-                        subs_dict[sp.Symbol(var)] = python_value
-                    else:
-                        subs_dict[sp.Symbol(var)] = expr
-
-            substituted = self._sympy_expr.subs(subs_dict)
-
-            # Update variable list - remove substituted vars, add new vars
-            new_vars = [v for v in self.variables if v not in substitutions]
-            # Add variables from substituted expressions
-            for expr in substitutions.values():
-                if isinstance(expr, Formula):
-                    new_vars.extend(
-                        v for v in expr.variables if v not in new_vars)
-
-            return Formula(substituted, new_vars, self.context)
-        else:
-            # Fallback: can't substitute without SymPy
-            raise NotImplementedError("Substitution requires SymPy")
-
-    def diff(self, var: str) -> Formula:
-        """
-        Differentiate with respect to a variable.
-
-        Args:
-            var: Variable to differentiate with respect to
-
-        Returns:
-            Derivative as Formula
-
-        Example:
-            >>> f = Formula("x^2")
-            >>> f.diff("x")
-            Formula("2*x")
-        """
-        if not SYMPY_AVAILABLE:
-            raise RuntimeError("Differentiation requires SymPy")
-
-        if self._sympy_expr is not None:
-            derivative = sp.diff(self._sympy_expr, sp.Symbol(var))
-            return Formula(derivative, self.variables, self.context)
-        else:
-            raise RuntimeError("Cannot differentiate: expression not parsed")
-
-    def D(self, var: str) -> 'Formula':
-        """Alias for diff() for Perl API compatibility.
-
-        Args:
-            var: Variable to differentiate with respect to
-
-        Returns:
-            Derivative as Formula
-        """
-        return self.diff(var)
-
-    def integrate(self, var: str) -> Formula:
-        """
-        Integrate with respect to a variable.
-
-        Args:
-            var: Variable to integrate with respect to
-
-        Returns:
-            Integral as Formula
-
-        Example:
-            >>> f = Formula("2*x")
-            >>> f.integrate("x")
-            Formula("x^2")
-        """
-        if not SYMPY_AVAILABLE:
-            raise RuntimeError("Integration requires SymPy")
-
-        if self._sympy_expr is not None:
-            integral = sp.integrate(self._sympy_expr, sp.Symbol(var))
-            return Formula(integral, self.variables, self.context)
-        else:
-            raise RuntimeError("Cannot integrate: expression not parsed")
-
-    # Test point evaluation (NEW FOR PARITY)
+                # Fallback: keep existing _sympy_expr
+                pass
 
     def create_random_points(
         self,
-        num_points: int | None = None,
-        include: list[list[float]] | None = None,
+        n: int | None = None,
+        test_at: dict[str, list[float]] | None = None,
         no_errors: bool = False,
-    ) -> tuple[list[list[float]], list[MathValue | None], bool]:
+        **kwargs: Any
+    ) -> list[list[float]] | tuple[list[list[float]], list[MathValue], bool]:
         """
-        Create random test points for formula comparison.
+        Generate random test points with granularity control.
 
-        Generates random points in variable domains and evaluates formula.
-        Ensures points where formula is defined (unless check_undefined_points).
+        Reference: Value::Formula.pm:300-380
 
         Args:
-            num_points: Number of points to generate (default: self._num_test_points)
-            include: Additional points to include
-            no_errors: If True, return error flag instead of raising
+            n: Number of points (uses default if None)
+            test_at: Specific points to include {var: [values]}
+            no_errors: If True, return tuple with values and error flag
 
         Returns:
-            Tuple of (points, values, has_error):
-            - points: List of coordinate lists [[x1, y1], [x2, y2], ...]
-            - values: Evaluated values (None for undefined points)
-            - has_error: True if couldn't generate enough valid points
-
-        Reference: lib/Value/Formula.pm::createRandomPoints (lines 338-406)
+            List of test points, or tuple (points, values, has_error) if no_errors=True
         """
-        if num_points is None:
-            num_points = self._num_test_points
+        # Get number of points
+        if n is None:
+            n = self._num_test_points
 
-        if num_points < 1:
-            num_points = 1
+        # Get variables
+        vars_list = sorted(self.variables)
+        if not vars_list:
+            return [[]]  # No variables
 
-        points = []
-        values = []
-        num_undefined = 0
+        # Get limits for each variable
+        limits = {}
+        default_limits = self._limits.get("default", [-2, 2])
 
-        # Include pre-specified points
-        if include:
-            points.extend(include)
-            for point in include:
-                try:
-                    val = self.eval(
-                        **{var: point[i] for i, var in enumerate(self.variables)})
-                    values.append(val)
-                except (ValueError, ZeroDivisionError, ArithmeticError):
-                    values.append(None)
-                    if self.check_undefined_points:
-                        num_undefined += 1
+        for var in vars_list:
+            if var in self._limits:
+                limits[var] = self._limits[var]
+            else:
+                limits[var] = default_limits
+
+        # Handle test_at (must-include points)
+        must_include = []
+        if test_at:
+            for var, values in test_at.items():
+                if var in vars_list:
+                    for val in values:
+                        # Create point with this value for var, random for others
+                        point = []
+                        for v in vars_list:
+                            if v == var:
+                                point.append(val)
+                            else:
+                                lo, hi = limits[v]
+                                point.append(random.uniform(lo, hi))
+                        must_include.append(point)
 
         # Generate random points
-        attempts = 0
-        max_attempts = num_points * 10
+        points = []
+        rng = self._get_rng()
 
-        while len(points) - num_undefined < num_points and attempts < max_attempts:
-            # Generate random point
+        # Add must-include points
+        points.extend(must_include)
+
+        # Generate remaining random points
+        remaining = n - len(must_include)
+        for _ in range(remaining):
             point = []
-            for var in self.variables:
-                if var in self._limits:
-                    low, high = self._limits[var]
-                else:
-                    low, high = -10.0, 10.0  # Default range
+            for var in vars_list:
+                lo, hi = limits[var]
+                point.append(rng.uniform(lo, hi))
+            points.append(point)
 
-                point.append(random.uniform(low, high))
+        # Apply granularity
+        if self.granularity > 0:
+            points = self._apply_granularity(points, limits, self.granularity)
 
-            # Try to evaluate at this point
+        # If no_errors is True, evaluate points and return tuple
+        if no_errors:
             try:
-                bindings = {var: point[i]
-                            for i, var in enumerate(self.variables)}
-                val = self.eval(**bindings)
+                values = self.create_point_values(points, show_error=False, check_undefined=True)
+                if values is None:
+                    return (points, [], True)  # Error occurred
+                return (points, values, False)  # No error
+            except Exception:
+                return (points, [], True)  # Error occurred
 
-                points.append(point)
-                values.append(val)
-                attempts = 0  # Reset on success
+        return points
 
-            except (ValueError, ZeroDivisionError, ArithmeticError):
-                # Function undefined at this point
-                if self.check_undefined_points and num_undefined < self.max_undefined:
-                    points.append(point)
-                    values.append(None)
-                    num_undefined += 1
+    def _apply_granularity(
+        self,
+        points: list[list[float]],
+        limits: dict[str, tuple[float, float]],
+        granularity: int
+    ) -> list[list[float]]:
+        """
+        Apply granularity to ensure evenly-spaced test points.
 
-                attempts += 1
+        Reference: Value::Formula.pm:340-360
 
-        has_error = attempts >= max_attempts
+        Args:
+            points: Original points
+            limits: Variable limits
+            granularity: Number of steps in range
 
-        if has_error and not no_errors:
-            raise ValueError(
-                f"Cannot generate enough valid test points for formula: {self.to_string()}")
+        Returns:
+            Adjusted points
+        """
+        vars_list = sorted(self.variables)
+        adjusted = []
 
-        # Cache results if this was automatic generation
-        if num_points == self._num_test_points:
-            self._test_points = points
-            self._test_values = values
+        for point in points:
+            adjusted_point = []
+            for i, var in enumerate(vars_list):
+                lo, hi = limits[var]
+                val = point[i]
 
-        return points, values, has_error
+                # Round to granularity
+                range_size = hi - lo
+                step = range_size / granularity
+                rounded = round((val - lo) / step) * step + lo
+
+                # Clamp to limits
+                rounded = max(lo, min(hi, rounded))
+                adjusted_point.append(rounded)
+
+            adjusted.append(adjusted_point)
+
+        return adjusted
+
+    def _get_rng(self) -> random.Random:
+        """Get RNG from context or create new one."""
+        if hasattr(self, "_rng"):
+            return self._rng
+
+        # Get seed from context or use default
+        seed = self._options.get("problem_seed", 12345)
+        self._rng = random.Random(seed)
+        return self._rng
 
     def create_point_values(
         self,
         points: list[list[float]] | None = None,
         show_error: bool = True,
         cache_results: bool = False,
-    ) -> list[MathValue | None]:
+        check_undefined: bool = False
+    ) -> list[MathValue | UNDEF] | None:
         """
-        Evaluate formula at given test points.
+        Evaluate formula at test points with caching.
+
+        Reference: Value::Formula.pm:264-299
 
         Args:
-            points: Test points to evaluate at (or use cached/generate)
-            show_error: If True, raise error on undefined points
-            cache_results: If True, cache the results
+            points: Test points
+            show_error: Raise error on undefined point
+            cache_results: Cache points and values
+            check_undefined: Track undefined points
 
         Returns:
-            List of evaluated values (None for undefined)
-
-        Reference: lib/Value/Formula.pm::createPointValues (lines 265-299)
+            List of evaluated values (None for failure, UNDEF for undefined points)
         """
+        # Get test points
         if points is None:
-            if self._test_points is None:
-                points, _, _ = self.create_random_points()
-            else:
+            if hasattr(self, "_test_points") and self._test_points:
                 points = self._test_points
+            else:
+                points = self.create_random_points()
 
-        values = []
+        # Get variables and parameters
+        vars_list = sorted(self.variables)
+        params_list = sorted(self.parameters)
+        param_zeros = [0] * len(params_list)
 
+        # Get or create Python function
+        func = self.python_function(vars=vars_list + params_list)
+
+        # Track undefined points
+        undefined_count = 0
+        max_undefined = self.max_undefined
+
+        # Evaluate at each point
+        values: list[MathValue | UNDEF] = []
         for point in points:
             try:
-                bindings = {var: point[i]
-                            for i, var in enumerate(self.variables)}
-                val = self.eval(**bindings)
-                values.append(val)
+                # Call function with point values and parameter zeros
+                result = func(*point, *param_zeros)
 
-            except (ValueError, ZeroDivisionError, ArithmeticError) as e:
-                if show_error and not self.check_undefined_points:
-                    raise ValueError(
-                        f"Cannot evaluate formula at point {point}: {e}")
-                values.append(None)
+                if result is None or (isinstance(result, float) and math.isnan(result)):
+                    if not check_undefined:
+                        if show_error:
+                            raise ValueError(
+                                f"Can't evaluate formula on test point ({', '.join(map(str, point))})"
+                            )
+                        return None
 
+                    # Track undefined
+                    undefined_count += 1
+                    if undefined_count > max_undefined:
+                        if show_error:
+                            raise ValueError(
+                                f"Too many undefined points (>{max_undefined})"
+                            )
+                        return None
+
+                    values.append(UNDEF_VALUE)
+                else:
+                    # Convert to MathValue
+                    value = MathValue.from_python(result)
+
+                    # Transfer tolerance flags from formula
+                    if hasattr(self, "tolerance"):
+                        value.tolerance = self.tolerance  # type: ignore
+                    if hasattr(self, "tolType"):
+                        value.tolType = self.tolType  # type: ignore
+
+                    values.append(value)
+
+            except (ZeroDivisionError, ValueError, OverflowError) as e:
+                if not check_undefined:
+                    if show_error:
+                        raise ValueError(f"Error evaluating formula: {e}")
+                    return None
+
+                undefined_count += 1
+                if undefined_count > max_undefined:
+                    if show_error:
+                        raise ValueError(f"Too many undefined points")
+                    return None
+
+                values.append(UNDEF_VALUE)
+
+        # Cache if requested
         if cache_results:
             self._test_points = points
             self._test_values = values
 
         return values
 
-    def python_function(self) -> Callable:
+    def python_function(
+        self,
+        name: str | None = None,
+        vars: list[str] | None = None
+    ) -> Callable:
         """
-        Convert formula to executable Python function.
+        Generate Python function from formula.
 
-        Returns a function that takes variable values and returns result.
-        Caches the function for repeated use.
+        Reference: Parser.pm:794-834 (perlFunction equivalent)
+
+        Args:
+            name: Function name (None for lambda)
+            vars: Variable names (uses formula vars if None)
 
         Returns:
-            Python function with signature func(*args) where args are variable values
-
-        Reference: lib/Value/Formula.pm::perlFunction (lines 500+)
+            Compiled Python function
         """
-        if self._python_func is not None:
-            return self._python_func
+        # Use formula variables if not specified
+        if vars is None:
+            vars = sorted(self.variables)
 
-        # Create function using SymPy lambdify
-        if SYMPY_AVAILABLE and self._sympy_expr is not None:
-            symbols = [sp.Symbol(var) for var in self.variables]
-            func = sp.lambdify(symbols, self._sympy_expr,
-                               modules=['numpy', 'math'])
-            self._python_func = func
-            return func
+        # Check cache
+        cache_key = (name or "", tuple(vars))
+        if cache_key in self._func_cache:
+            return self._func_cache[cache_key]
+
+        # Build function
+        if SYMPY_AVAILABLE and hasattr(self, "_sympy_expr") and self._sympy_expr is not None:
+            # Use SymPy lambdify (fast!)
+            try:
+                # Use "numpy" first for numerical evaluation, then "math" as fallback
+                base_func = sp.lambdify(
+                    [sp.Symbol(v) for v in vars],
+                    self._sympy_expr,
+                    modules=["numpy", "math", {"abs": abs}]
+                )
+
+                # Wrap to ensure float conversion (in case SymPy returns symbolic)
+                def func(*args):
+                    result = base_func(*args)
+                    # Convert SymPy expressions to float
+                    if hasattr(result, "evalf"):
+                        evaluated = result.evalf()
+                        # Try to extract numerical value
+                        if hasattr(evaluated, "is_Number") and evaluated.is_Number:
+                            return float(evaluated)
+                        elif hasattr(evaluated, "n"):
+                            return float(evaluated.n())
+                        else:
+                            # Fallback: force conversion
+                            try:
+                                return float(evaluated)
+                            except:
+                                # Return the expression as-is and let caller handle it
+                                return float(result.n())  # Force numerical evaluation
+                    return result
+
+            except Exception:
+                # Fallback to eval
+                func = self._build_eval_function(vars)
         else:
-            # Fallback: create function using eval
-            def eval_func(*args):
-                bindings = {var: args[i]
-                            for i, var in enumerate(self.variables)}
-                return self.eval(**bindings).to_python()
+            # Fallback: use eval
+            func = self._build_eval_function(vars)
 
-            self._python_func = eval_func
-            return eval_func
+        # Cache function
+        self._func_cache[cache_key] = func
 
-    # MathValue interface implementation
+        return func
 
-    def promote(self, other: MathValue) -> MathValue:
-        """
-        Formula is the highest precedence type, so no promotion needed.
-        """
-        return self
+    def _build_eval_function(self, vars: list[str]) -> Callable:
+        """Build function using eval."""
+        # Convert formula to Python expression
+        expr_str = str(self.expression)
 
-    def compare(
-        self, other: MathValue, tolerance: float = 0.001, mode: str = ToleranceMode.RELATIVE
+        # Build function
+        var_params = ", ".join(vars)
+        func_code = f"""
+def formula_func({var_params}):
+    import math
+    return {expr_str}
+"""
+
+        # Compile
+        namespace: dict[str, Any] = {}
+        exec(func_code, namespace)
+        return namespace["formula_func"]
+
+
+    def adapt_parameters(
+        self,
+        student_formula: "Formula",
+        max_adapt: float = 1e8,
+        attempts: int = 3
     ) -> bool:
         """
-        Compare two formulas for equality using test point evaluation.
+        Solve for adaptive parameters using student's formula.
 
-        Matches Perl's comparison behavior:
-        1. Try symbolic comparison (SymPy) first
-        2. Generate test points for left formula
-        3. Evaluate both formulas at test points
-        4. Compare values at each point with tolerance
-        5. Track domain mismatches (where one formula undefined)
+        Reference: Value::Formula.pm:484-570 (AdaptParameters)
+
+        This implements adaptive parameter solving for formulas like:
+        - Correct: C*e^x (with parameter C)
+        - Student: 5*e^x
+        Result: Solves C = 5
 
         Args:
-            other: Other value to compare
-            tolerance: Tolerance for numeric comparison
-            mode: Tolerance mode
+            student_formula: Student's formula to adapt to
+            max_adapt: Maximum allowed parameter value
+            attempts: Number of random attempts
 
         Returns:
-            True if formulas are equivalent at all test points
-
-        Reference: lib/Value/Formula.pm::compare (lines 169-235)
+            True if parameters solved successfully
         """
-        # Special handling for assignment formulas
-        # Reference: macros/parsers/parserAssignment.pl::compare (lines 385-403)
-        if hasattr(self, '_is_assignment') and self._is_assignment:
-            # This is an assignment formula - compare by right-hand sides
-            if not isinstance(other, Formula):
-                # Try to parse other as assignment if it's a string
-                if isinstance(other, str):
-                    if self.context and self.context.has_assignment_operator():
-                        from pg.math.compute import _parse_assignment
-                        other = _parse_assignment(other, self.context)
-                        if other is None:
-                            return False
-                    else:
+        # Check if we have parameters
+        if not self.parameters:
+            return False
+
+        # Check if formula uses any parameters
+        if not self.uses_one_of(*self.parameters):
+            return False
+
+        # Get number of parameters
+        num_params = len(self.parameters)
+        params_list = sorted(self.parameters)
+
+        # Try multiple attempts with different random points
+        for attempt in range(attempts):
+            try:
+                # Generate test points
+                points = self.create_random_points(n=num_params)
+
+                # Build linear system: A * params = b
+                # where A[i][j] = effect of param[j] at point[i]
+                #       b[i] = student_value[i] - base_value[i]
+                A_matrix = []
+                b_vector = []
+
+                # Get functions
+                vars_list = sorted(self.variables)
+                correct_func = self.python_function(vars=vars_list + params_list)
+                student_func = student_formula.python_function(vars=vars_list)
+
+                # Evaluate at each test point
+                for point in points:
+                    # Get base value (all parameters = 0)
+                    param_zeros = [0] * num_params
+                    base_value = correct_func(*point, *param_zeros)
+
+                    if base_value is None or (isinstance(base_value, float) and math.isnan(base_value)):
+                        raise ValueError("Undefined base value")
+
+                    # Get student value
+                    student_value = student_func(*point)
+
+                    if student_value is None or (isinstance(student_value, float) and math.isnan(student_value)):
+                        # Can't adapt if student formula undefined
                         return False
-                else:
-                    return False
-            
-            # Check if other is also an assignment
-            if not (hasattr(other, '_is_assignment') and other._is_assignment):
-                return False
-            
-            # Get assignment values
-            self_assign = getattr(self, '_assignment_value', None)
-            other_assign = getattr(other, '_assignment_value', None)
-            
-            if self_assign is None or other_assign is None:
-                return False
-            
-            # Handle function assignment parameter renaming
-            # Reference: Perl lines 390-400
-            if self_assign.is_function and other_assign.is_function:
-                # Both are function assignments
-                if len(self_assign.params) != len(other_assign.params):
-                    return False
-                
-                # Parameter names can differ, but we compare RHS values
-                # For now, just compare RHS values directly
-                # TODO: Implement parameter substitution for proper comparison
-                return self_assign.value.compare(other_assign.value, tolerance, mode) if hasattr(self_assign.value, 'compare') else self_assign.value == other_assign.value
-            
-            # For variable assignments, variable names must match
-            if not self_assign.is_function and not other_assign.is_function:
-                if self_assign.variable != other_assign.variable:
-                    return False
-                # Compare RHS values
-                return self_assign.value.compare(other_assign.value, tolerance, mode) if hasattr(self_assign.value, 'compare') else self_assign.value == other_assign.value
-            
-            # One is function, one is variable - not equal
-            return False
-        
-        if not isinstance(other, Formula):
-            # Try to promote other to Formula
-            if isinstance(other, MathValue):
-                other = Formula(str(other.to_python()), [], self.context)
-            else:
-                return False
 
-        # Try symbolic comparison first (fast path)
-        if SYMPY_AVAILABLE and self._sympy_expr is not None and other._sympy_expr is not None:
-            try:
-                difference = sp.simplify(self._sympy_expr - other._sympy_expr)
-                if difference == 0:
-                    self.domain_mismatch = False
-                    return True
-            except Exception:
-                pass  # Fall through to test point evaluation
+                    # Get coefficients for each parameter
+                    row = []
+                    for j, param in enumerate(params_list):
+                        # Set param[j] = 1, others = 0
+                        param_values = [0] * num_params
+                        param_values[j] = 1
 
-        # Get or generate test points for left formula
-        if self._test_points is None or self._test_values is None:
-            points, left_values, _ = self.create_random_points(no_errors=True)
-        else:
-            points = self._test_points
-            left_values = self._test_values
+                        # Evaluate with this parameter set
+                        param_value = correct_func(*point, *param_values)
 
-        # Evaluate right formula at same test points
-        try:
-            right_values = other.create_point_values(points, show_error=False)
-        except Exception:
-            # Right formula can't be evaluated
-            self.domain_mismatch = True
-            return False
+                        if param_value is None or (isinstance(param_value, float) and math.isnan(param_value)):
+                            raise ValueError(f"Undefined parameter value for {param}")
 
-        # Compare values at each test point
-        self.domain_mismatch = False
+                        # Coefficient is difference from base
+                        coeff = float(param_value) - float(base_value)
+                        row.append(coeff)
 
-        for left_val, right_val in zip(left_values, right_values):
-            # Check for domain mismatch (one defined, other not)
-            if (left_val is None) != (right_val is None):
-                self.domain_mismatch = True
+                    A_matrix.append(row)
+
+                    # RHS is student - base
+                    b_val = float(student_value) - float(base_value)
+                    b_vector.append(b_val)
+
+                # Solve linear system A * x = b
+                solution = self._solve_linear_system(A_matrix, b_vector)
+
+                if solution is None:
+                    continue  # Try next attempt
+
+                # Check solution values
+                for i, (param, value) in enumerate(zip(params_list, solution)):
+                    if abs(value) > max_adapt:
+                        # Check if it's a constant of integration
+                        if param in ("C0", "n00"):
+                            raise ValueError(
+                                f"Constant of integration is too large: {value}\n"
+                                f"(maximum allowed is {max_adapt})"
+                            )
+                        else:
+                            raise ValueError(
+                                f"Adaptive constant is too large: {param} = {value}\n"
+                                f"(maximum allowed is {max_adapt})"
+                            )
+
+                # Success! Store parameters
+                self._parameters_values = solution
+                self._parameters_dict = dict(zip(params_list, solution))
+
+                # Recompute test values with adapted parameters
+                self._test_adapt = self._create_adapted_values()
+
+                return True
+
+            except ValueError as e:
+                # Check if it's a "too large" error - if so, re-raise immediately
+                if "too large" in str(e):
+                    raise
+                # Otherwise, try next attempt
+                continue
+            except (ZeroDivisionError, OverflowError):
+                # Try next attempt
                 continue
 
-            # Skip if both undefined
-            if left_val is None and right_val is None:
-                continue
+        # Failed all attempts
+        raise ValueError("Can't solve for adaptive parameters")
 
-            # Compare defined values
-            if not left_val.compare(right_val, tolerance, mode):
-                return False
-
-        return True
-
-    def to_string(self) -> str:
-        """Convert to human-readable string."""
-        if self._sympy_expr is not None:
-            return str(self._sympy_expr)
-        else:
-            return str(self.expression)
-
-    def to_tex(self) -> str:
-        """Convert to LaTeX representation."""
-        if SYMPY_AVAILABLE and self._sympy_expr is not None:
-            return sp.latex(self._sympy_expr)
-        else:
-            # Fallback: use pg_parser TeXVisitor
-            try:
-                from pg.parser.parser import Parser
-                from pg.parser.visitors import TeXVisitor
-
-                parser = Parser(self.context)
-                ast = parser.parse(self.expression)
-                visitor = TeXVisitor(self.context)
-                return ast.accept(visitor)
-            except ImportError:
-                return str(self.expression)
-
-    def to_python(self) -> Any:
+    def _solve_linear_system(
+        self,
+        A: list[list[float]],
+        b: list[float]
+    ) -> list[float] | None:
         """
-        Convert to Python representation.
+        Solve linear system A * x = b.
 
-        If formula has no variables, returns the evaluated value.
-        Otherwise, returns the expression string.
-        """
-        if not self.variables:
-            try:
-                return self.eval().to_python()
-            except Exception:
-                pass
+        Reference: Value::Formula.pm:527-566 (uses MatrixReal1)
 
-        return self.to_string()
+        For simple cases, uses direct solution.
+        For complex cases, requires scipy.
 
-    # Operator overloading
-
-    def __add__(self, other: Any) -> Formula:
-        """Addition: self + other"""
-        if not isinstance(other, MathValue):
-            from .numeric import Real
-
-            other = Real(float(other))
-
-        if SYMPY_AVAILABLE and self._sympy_expr is not None:
-            if isinstance(other, Formula) and other._sympy_expr is not None:
-                result = self._sympy_expr + other._sympy_expr
-            else:
-                result = self._sympy_expr + other.to_python()
-
-            # Combine variable lists
-            combined_vars = list(set(self.variables) | set(
-                getattr(other, "variables", [])))
-            return Formula(result, combined_vars, self.context)
-        else:
-            # Fallback: string concatenation
-            return Formula(f"({self.to_string()}) + ({other.to_string()})", self.variables, self.context)
-
-    def __radd__(self, other: Any) -> Formula:
-        """Right addition: other + self"""
-        return self.__add__(other)
-
-    def __sub__(self, other: Any) -> Formula:
-        """Subtraction: self - other"""
-        if not isinstance(other, MathValue):
-            from .numeric import Real
-
-            other = Real(float(other))
-
-        if SYMPY_AVAILABLE and self._sympy_expr is not None:
-            if isinstance(other, Formula) and other._sympy_expr is not None:
-                result = self._sympy_expr - other._sympy_expr
-            else:
-                result = self._sympy_expr - other.to_python()
-
-            combined_vars = list(set(self.variables) | set(
-                getattr(other, "variables", [])))
-            return Formula(result, combined_vars, self.context)
-        else:
-            return Formula(f"({self.to_string()}) - ({other.to_string()})", self.variables, self.context)
-
-    def __rsub__(self, other: Any) -> Formula:
-        """Right subtraction: other - self"""
-        if not isinstance(other, MathValue):
-            from .numeric import Real
-
-            other = Real(float(other))
-
-        return Formula.from_math_value(other).__sub__(self)
-
-    def __mul__(self, other: Any) -> Formula:
-        """Multiplication: self * other"""
-        if not isinstance(other, MathValue):
-            from .numeric import Real
-
-            other = Real(float(other))
-
-        if SYMPY_AVAILABLE and self._sympy_expr is not None:
-            if isinstance(other, Formula) and other._sympy_expr is not None:
-                result = self._sympy_expr * other._sympy_expr
-            else:
-                result = self._sympy_expr * other.to_python()
-
-            combined_vars = list(set(self.variables) | set(
-                getattr(other, "variables", [])))
-            return Formula(result, combined_vars, self.context)
-        else:
-            return Formula(f"({self.to_string()}) * ({other.to_string()})", self.variables, self.context)
-
-    def __rmul__(self, other: Any) -> Formula:
-        """Right multiplication: other * self"""
-        return self.__mul__(other)
-
-    def __truediv__(self, other: Any) -> Formula:
-        """Division: self / other"""
-        if not isinstance(other, MathValue):
-            from .numeric import Real
-
-            other = Real(float(other))
-
-        if SYMPY_AVAILABLE and self._sympy_expr is not None:
-            if isinstance(other, Formula) and other._sympy_expr is not None:
-                result = self._sympy_expr / other._sympy_expr
-            else:
-                result = self._sympy_expr / other.to_python()
-
-            combined_vars = list(set(self.variables) | set(
-                getattr(other, "variables", [])))
-            return Formula(result, combined_vars, self.context)
-        else:
-            return Formula(f"({self.to_string()}) / ({other.to_string()})", self.variables, self.context)
-
-    def __rtruediv__(self, other: Any) -> Formula:
-        """Right division: other / self"""
-        if not isinstance(other, MathValue):
-            from .numeric import Real
-
-            other = Real(float(other))
-
-        return Formula.from_math_value(other).__truediv__(self)
-
-    def __pow__(self, other: Any) -> Formula:
-        """Exponentiation: self ** other"""
-        if not isinstance(other, MathValue):
-            from .numeric import Real
-
-            other = Real(float(other))
-
-        if SYMPY_AVAILABLE and self._sympy_expr is not None:
-            if isinstance(other, Formula) and other._sympy_expr is not None:
-                result = self._sympy_expr ** other._sympy_expr
-            else:
-                result = self._sympy_expr ** other.to_python()
-
-            combined_vars = list(set(self.variables) | set(
-                getattr(other, "variables", [])))
-            return Formula(result, combined_vars, self.context)
-        else:
-            return Formula(f"({self.to_string()}) ** ({other.to_string()})", self.variables, self.context)
-
-    def __rpow__(self, other: Any) -> Formula:
-        """Right exponentiation: other ** self"""
-        if not isinstance(other, MathValue):
-            from .numeric import Real
-
-            other = Real(float(other))
-
-        return Formula.from_math_value(other).__pow__(self)
-
-    def __neg__(self) -> Formula:
-        """Unary negation: -self"""
-        if SYMPY_AVAILABLE and self._sympy_expr is not None:
-            return Formula(-self._sympy_expr, self.variables, self.context)
-        else:
-            return Formula(f"-({self.to_string()})", self.variables, self.context)
-
-    def __pos__(self) -> Formula:
-        """Unary positive: +self"""
-        return self
-
-    def __abs__(self) -> Formula:
-        """Absolute value: abs(self)"""
-        if SYMPY_AVAILABLE and self._sympy_expr is not None:
-            return Formula(sp.Abs(self._sympy_expr), self.variables, self.context)
-        else:
-            return Formula(f"abs({self.to_string()})", self.variables, self.context)
-
-    @classmethod
-    def from_math_value(cls, value: MathValue) -> Formula:
-        """Convert a MathValue to a Formula."""
-        if isinstance(value, Formula):
-            return value
-
-        if SYMPY_AVAILABLE:
-            python_val = value.to_python()
-            if isinstance(python_val, (int, float)):
-                return cls(sp.sympify(python_val), [], None)
-            else:
-                return cls(str(python_val), [], None)
-        else:
-            return cls(str(value.to_python()), [], None)
-
-    # Answer checking (NEW FOR PARITY)
-
-    @property
-    def cmp(self):
-        """
-        Create an answer evaluator for this formula.
-
-        This is the built-in answer checker that every Formula has in Perl.
-        Returns a CMPWrapper that can be:
-        - Called as cmp() to get answer checker
-        - Chained as cmp.withPostFilter(...) for Perl compatibility
+        Args:
+            A: Coefficient matrix (n x n)
+            b: RHS vector (n)
 
         Returns:
-            CMPWrapper that works as both callable and has withPostFilter
-
-        Example:
-            >>> f = Formula("x^2", variables=["x"])
-            >>> checker = f.cmp()
-            >>> result = checker.check("x*x")
-            >>> result['correct']  # True
-            >>> # Or chain: f.cmp.withPostFilter(AnswerHints(...))
-
-        Reference: lib/Value/Formula.pm::cmp (lines 430-470)
+            Solution vector x, or None if no solution
         """
-        return CMPWrapper(self)
+        n = len(A)
 
-    def adapt_parameters(self, student_formula, *param_names):
-        """Adaptive parameter finding (advanced)."""
-        if not SYMPY_AVAILABLE:
-            return None
+        # Simple case: 1 parameter (linear)
+        if n == 1:
+            if abs(A[0][0]) < 1e-10:
+                return None  # Singular
+            return [b[0] / A[0][0]]
 
-        n_params = len(param_names)
-        if n_params == 0:
-            return {}
-
+        # Try using numpy/scipy if available
         try:
             import numpy as np
+            A_np = np.array(A, dtype=float)
+            b_np = np.array(b, dtype=float)
 
-            regular_vars = [v for v in self.variables if v not in param_names]
-            if not regular_vars:
-                return None
+            # Check determinant
+            det = np.linalg.det(A_np)
+            if abs(det) < 1e-6:
+                return None  # Singular
 
-            test_pts, _, has_error = self.create_random_points(
-                num_points=n_params, include=regular_vars
-            )
-            if has_error or not test_pts:
-                return None
+            # Solve
+            x = np.linalg.solve(A_np, b_np)
+            return x.tolist()
 
-            student_func = student_formula.python_function()
-            correct_func = self.python_function()
+        except ImportError:
+            # Fallback for 2x2 case (common for 2 parameters)
+            if n == 2:
+                a11, a12 = A[0]
+                a21, a22 = A[1]
+                b1, b2 = b
 
-            A_matrix = []
-            b_vector = []
-
-            for pt in test_pts:
-                try:
-                    student_val = student_func(*pt)
-                    row = []
-                    for param in param_names:
-                        param_pt = list(
-                            pt) + [1 if p == param else 0 for p in param_names]
-                        val_with = correct_func(*param_pt)
-                        val_without = correct_func(*list(pt), *[0]*n_params)
-                        row.append(float(val_with - val_without))
-                    baseline = correct_func(*list(pt), *[0]*n_params)
-                    b_vector.append(float(student_val - baseline))
-                    A_matrix.append(row)
-                except:
+                det = a11 * a22 - a12 * a21
+                if abs(det) < 1e-6:
                     return None
 
-            params_solution = np.linalg.lstsq(
-                np.array(A_matrix), np.array(b_vector), rcond=None)[0]
-            return {param: float(val) for param, val in zip(param_names, params_solution)}
-        except:
-            return None
+                # Cramer's rule
+                x1 = (b1 * a22 - b2 * a12) / det
+                x2 = (a11 * b2 - a21 * b1) / det
+                return [x1, x2]
 
-    def toUnits(self, unit_string):
+            # For n > 2, need scipy
+            raise ValueError(
+                "Adaptive parameters with >2 parameters requires numpy. "
+                "Install with: pip install numpy"
+            )
+
+    def _create_adapted_values(self) -> list[MathValue]:
         """
-        Convert this formula with units to a specified unit.
+        Create test values with adapted parameters.
 
-        Args:
-            unit_string: Target unit as string (e.g., 'cup', 'mi/h')
+        Reference: Value::Formula.pm:563 (createAdaptedValues)
 
         Returns:
-            New Formula with converted units (stub implementation)
+            List of values evaluated with adapted parameters
         """
-        # Stub: In full implementation, this would use unit conversion
-        # For now, return self as-is
-        return self
+        if not hasattr(self, "_test_points") or not self._test_points:
+            self._test_points = self.create_random_points()
 
-    def __getitem__(self, key):
+        points = self._test_points
+        params_list = sorted(self.parameters)
+        param_values = self._parameters_values
+
+        # Get function
+        vars_list = sorted(self.variables)
+        func = self.python_function(vars=vars_list + params_list)
+
+        # Evaluate at each point with adapted parameters
+        values = []
+        for point in points:
+            result = func(*point, *param_values)
+            value = MathValue.from_python(result)
+
+            # Transfer flags
+            if hasattr(self, "tolerance"):
+                value.tolerance = self.tolerance  # type: ignore
+            if hasattr(self, "tolType"):
+                value.tolType = self.tolType  # type: ignore
+
+            values.append(value)
+
+        return values
+
+    def uses_one_of(self, *names: str) -> bool:
         """
-        Support subscript access for Perl hash-like attribute access.
+        Check if formula uses any of the given variable/parameter names.
 
-        Allows: formula['test_points'] or formula['limits']
+        Args:
+            *names: Variable or parameter names to check
 
-        This enables Perl idiom: $f->{test_points} = [[1], [2]]
-        which preprocessor converts to: f['test_points'] = [[1], [2]]
+        Returns:
+            True if formula uses any of the names
         """
-        return getattr(self, key, None)
+        # Check both variables and parameters
+        formula_vars = set(self.variables) | set(self.parameters)
+        check_vars = set(names)
+        return bool(formula_vars & check_vars)
 
-    def __setitem__(self, key, value):
+    def compare(
+        self,
+        other: "Formula",
+        use_adaptive: bool = True,
+        **options: Any
+    ) -> bool:
         """
-        Support subscript assignment for Perl hash-like attribute setting.
+        Compare formulas with optional adaptive parameter solving.
 
-        Allows: formula['test_points'] = [[1], [2], [3]]
+        Reference: Value::Formula.pm:169-235 (cmp_compare with adaptive)
 
-        This enables Perl idiom: $f->{test_points} = [[1], [2]]
-        which preprocessor converts to: f['test_points'] = [[1], [2]]
+        Args:
+            other: Formula to compare with
+            use_adaptive: Try adaptive parameters if available
+            **options: Comparison options
+
+        Returns:
+            True if formulas are equivalent
         """
-        setattr(self, key, value)
+        # Try adaptive parameters if enabled and available
+        if use_adaptive and self.parameters:
+            try:
+                if self.adapt_parameters(other):
+                    # Use adapted test values
+                    if hasattr(self, "_test_adapt"):
+                        return self._compare_test_values(
+                            self._test_adapt,
+                            other,
+                            **options
+                        )
+            except ValueError:
+                # Adaptation failed, fall through to regular comparison
+                pass
+
+        # Regular comparison using test points
+        return super().compare(other, **options)
+
+    def _compare_test_values(
+        self,
+        values: list[MathValue],
+        other: "Formula",
+        **options: Any
+    ) -> bool:
+        """
+        Compare using pre-computed test values.
+
+        Args:
+            values: Test values from this formula
+            other: Other formula
+            **options: Comparison options
+
+        Returns:
+            True if all values match
+        """
+        # Get test points
+        if not hasattr(self, "_test_points"):
+            return False
+
+        points = self._test_points
+
+        # Evaluate other formula at same points
+        other_values = other.create_point_values(points)
+
+        if other_values is None:
+            return False
+
+        # Compare each pair
+        tolerance = options.get("tolerance", getattr(self, "tolerance", 1e-6))
+
+        for v1, v2 in zip(values, other_values):
+            if isinstance(v1, UNDEF) or isinstance(v2, UNDEF):
+                # Both must be undefined
+                if not (isinstance(v1, UNDEF) and isinstance(v2, UNDEF)):
+                    return False
+            else:
+                # Compare numerically
+                diff = abs(float(v1) - float(v2))
+                if diff > tolerance:
+                    return False
+
+        return True

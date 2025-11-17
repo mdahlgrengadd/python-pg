@@ -1,0 +1,22 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "MathObjects.pl");
+TEXT(beginproblem());
+
+Context("Interval");
+
+$int1 = Interval("(0,5)");
+$int2 = Interval("[2,7]");
+$union = Union("(0,2) U [5,7]");
+
+BEGIN_TEXT
+Interval 1: \($int1\)$BR
+Interval 2: \($int2\)$BR
+Union: \($union\)$BR
+$BR
+Enter the interval (0,5): \{ans_rule(20)\}$BR
+END_TEXT
+
+ANS($int1->cmp());
+
+ENDDOCUMENT();
+

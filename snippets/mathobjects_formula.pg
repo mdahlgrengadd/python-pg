@@ -1,0 +1,30 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "MathObjects.pl");
+TEXT(beginproblem());
+
+Context("Numeric");
+Context()->variables->add(t => 'Real');
+
+$a = random(2, 5, 1);
+$b = random(1, 4, 1);
+
+$f = Formula("$a*x + $b");
+$g = Formula("$a*t^2 + $b*t");
+
+$f_at_2 = $f->eval(x => 2);
+$g_at_3 = $g->eval(t => 3);
+
+BEGIN_TEXT
+Formula 1: \(f(x) = $f\)$BR
+Value at x=2: \($f_at_2\)$BR
+$BR
+Formula 2: \(g(t) = $g\)$BR
+Value at t=3: \($g_at_3\)$BR
+$BR
+Enter f(x): \{ans_rule(20)\}$BR
+END_TEXT
+
+ANS($f->cmp());
+
+ENDDOCUMENT();
+

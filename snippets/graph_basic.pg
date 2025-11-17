@@ -1,0 +1,23 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "PGgraphmacros.pl");
+TEXT(beginproblem());
+
+# Note: This test is expected to fail or have limited functionality
+# Graph macros are marked as low priority and not yet implemented
+
+$graph = init_graph(-5,-5,5,5,
+    axes => [0,0],
+    grid => [10,10],
+    size => [400,400]
+);
+
+add_functions($graph, "x^2 for x in <-3,3> using color:blue and weight:2");
+
+BEGIN_TEXT
+Graph of \(y = x^2\):$BR
+$BR
+\{image(insertGraph($graph), width=>400, height=>400, tex_size=>800)\}
+END_TEXT
+
+ENDDOCUMENT();
+

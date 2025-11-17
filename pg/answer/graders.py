@@ -10,17 +10,22 @@ Reference: lib/AnswerHash.pm grading methods (lines 400-500)
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .answer_hash import AnswerResult
 
 
-class Grader(ABC):
+class Grader(BaseModel, ABC):
     """
     Abstract base class for problem graders.
 
-    Graders take a list of AnswerResults (one per answer blank)
+    Pydantic-based graders take a list of AnswerResults (one per answer blank)
     and compute an overall problem score.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
     @abstractmethod
     def grade(self, answers: list[AnswerResult]) -> float:
@@ -68,9 +73,26 @@ class AverageGrader(Grader):
 
     Problem score is the average of individual answer scores.
     This allows partial credit for getting some answers right.
+    Pydantic-based with weights validation.
     """
 
-    def __init__(self, weights: list[float] | None = None):
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    weights: Optional[list[float]] = Field(
+        default=None,
+        description="Optional weights for each answer (must sum to 1.0)"
+    )
+
+    @field_validator('weights')
+    @classmethod
+    def validate_weights(cls, v: Optional[list[float]]) -> Optional[list[float]]:
+        """Validate that weights are positive and will be checked in grade()."""
+        if v is not None:
+            if not all(w >= 0 for w in v):
+                raise ValueError("All weights must be non-negative")
+        return v
+
+    def __init__(self, weights: Optional[list[float]] = None, **kwargs):
         """
         Initialize average grader.
 
@@ -78,7 +100,7 @@ class AverageGrader(Grader):
             weights: Optional weights for each answer (must sum to 1.0)
                     If None, all answers weighted equally
         """
-        self.weights = weights
+        super().__init__(weights=weights, **kwargs)
 
     def grade(self, answers: list[AnswerResult]) -> float:
         """
@@ -126,7 +148,10 @@ class FirstAnswerGrader(Grader):
 
     Problem score is based only on the first answer blank.
     Useful for problems with one primary answer and auxiliary blanks.
+    Pydantic-based grader.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
     def grade(self, answers: list[AnswerResult]) -> float:
         """
@@ -150,7 +175,10 @@ class MinimumGrader(Grader):
 
     Problem score is the minimum of all answer scores.
     Useful when all parts are equally critical.
+    Pydantic-based grader.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
     def grade(self, answers: list[AnswerResult]) -> float:
         """
@@ -173,16 +201,24 @@ class CustomGrader(Grader):
     Custom grader using user-provided function.
 
     Allows arbitrary grading logic via a callback function.
+    Pydantic-based with callable field.
     """
 
-    def __init__(self, grading_function: callable):
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    grading_function: Optional[Any] = Field(
+        default=None,
+        description="Function taking list[AnswerResult] → float"
+    )
+
+    def __init__(self, grading_function: Optional[Any] = None, **kwargs):
         """
         Initialize custom grader.
 
         Args:
             grading_function: Function taking list[AnswerResult] → float
         """
-        self.grading_function = grading_function
+        super().__init__(grading_function=grading_function, **kwargs)
 
     def grade(self, answers: list[AnswerResult]) -> float:
         """

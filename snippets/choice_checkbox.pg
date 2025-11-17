@@ -1,0 +1,23 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "PGchoicemacros.pl");
+TEXT(beginproblem());
+
+$mc = new_checkbox_multiple_choice();
+$mc->qa(
+    "Select all even numbers:",
+    "2", "4", "6"
+);
+$mc->extra(
+    "1", "3", "5"
+);
+
+BEGIN_TEXT
+\{$mc->print_q()\}
+$BR
+\{$mc->print_a()\}
+END_TEXT
+
+ANS(checkbox_cmp($mc->correct_ans()));
+
+ENDDOCUMENT();
+

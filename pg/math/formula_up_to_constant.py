@@ -23,6 +23,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict
 
+from pydantic import ConfigDict, Field, PrivateAttr
+
 try:
     import sympy as sp
     SYMPY_AVAILABLE = True
@@ -42,11 +44,22 @@ class FormulaUpToConstant(Formula):
 
     Attributes:
         constant (str | None): The name of the arbitrary constant (e.g., "C", "K")
-        _arbitrary_constants (set): Set of arbitrary constant names
-        _private_context (Context): Private context copy for this formula
 
     Reference: parserFormulaUpToConstant.pl
     """
+
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        validate_assignment=True,
+        extra='allow',
+    )
+
+    # Pydantic fields
+    constant: str | None = Field(default=None, description="Name of the arbitrary constant")
+
+    # Private attributes
+    _arbitrary_constants: set[str] = PrivateAttr(default_factory=set)
+    _private_context: Any = PrivateAttr(default=None)
 
     def __init__(
         self,
@@ -72,29 +85,29 @@ class FormulaUpToConstant(Formula):
 
         private_context = context.copy()
 
-        # Store a set of arbitrary constants for this formula
-        self._arbitrary_constants = set()
-
         # Handle different input types
         if isinstance(expression, FormulaUpToConstant):
             # Copy from existing FormulaUpToConstant
             super().__init__(expression.expression, expression.variables, private_context)
-            self.constant = expression.constant
-            self._private_context = private_context
-            self._arbitrary_constants = expression._arbitrary_constants.copy()
-            return
+            constant_value = expression.constant
+            arbitrary_constants = expression._arbitrary_constants.copy()
         elif isinstance(expression, Formula):
             # Convert from Formula
             super().__init__(expression.expression, expression.variables, private_context)
+            constant_value = None
+            arbitrary_constants = set()
         else:
             # Parse new expression
             super().__init__(expression, variables, private_context)
+            constant_value = None
+            arbitrary_constants = set()
 
         # Store private context
         self._private_context = private_context
+        self._arbitrary_constants = arbitrary_constants
 
         # Find the arbitrary constant in the expression
-        self.constant = self._find_constant()
+        self.constant = constant_value or self._find_constant()
 
         # If no constant found, add C automatically
         if self.constant is None and SYMPY_AVAILABLE:

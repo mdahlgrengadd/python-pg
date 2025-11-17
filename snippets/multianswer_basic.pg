@@ -1,0 +1,36 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "MathObjects.pl", "parserMultiAnswer.pl");
+TEXT(beginproblem());
+
+Context("Numeric");
+
+$a = 3;
+$b = 4;
+$c = 5;
+
+# Pythagorean triple checker
+$multians = MultiAnswer($a, $b, $c)->with(
+  singleResult => 1,
+  checker => sub {
+    my ($correct, $student, $self) = @_;
+    my ($sa, $sb, $sc) = @{$student};
+    my ($ca, $cb, $cc) = @{$correct};
+
+    # Check if it's a valid Pythagorean triple
+    if ($sa**2 + $sb**2 == $sc**2) {
+      return 1;
+    }
+    return 0;
+  }
+);
+
+BEGIN_TEXT
+Enter a Pythagorean triple (a, b, c) where \(a^2 + b^2 = c^2\):$BR
+a = \{$multians->ans_rule(10)\}$BR
+b = \{$multians->ans_rule(10)\}$BR
+c = \{$multians->ans_rule(10)\}$BR
+END_TEXT
+
+ANS($multians->cmp());
+
+ENDDOCUMENT();

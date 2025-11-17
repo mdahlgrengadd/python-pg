@@ -147,7 +147,7 @@ class LinearRelation:
         self.__class__.Init()
         
         from ...math.context import get_context
-        from ...math.formula import Formula
+        from ...math.formula_enhanced import Formula
         from ...math.geometric import Vector, Point
         from ...math.numeric import Real
         

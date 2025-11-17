@@ -12,46 +12,45 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, ClassVar
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
 from pg.math import MathValue
 
 from .answer_hash import AnswerResult
 
 
-class AnswerEvaluator(ABC):
+class AnswerEvaluator(BaseModel, ABC):
     """
     Abstract base class for answer evaluators.
 
     Each evaluator is responsible for checking answers of a specific type
     (numeric, formula, string, etc.) against a correct answer.
 
+    Pydantic-based with field validation for tolerance modes.
+
     Subclasses must implement:
     - evaluate(): Core evaluation logic
     - answer_type: Class variable for type identification
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
     # Type identifier (must be set by subclasses)
     answer_type: ClassVar[str] = "unknown"
 
-    def __init__(
-        self,
-        correct_answer: MathValue | str | Any,
-        tolerance: float = 0.001,
-        tolerance_mode: str = "relative",
-        **options: Any,
-    ):
-        """
-        Initialize evaluator with correct answer and options.
+    correct_answer: Any = Field(description="The correct answer to compare against")
+    tolerance: float = Field(default=0.001, gt=0, description="Tolerance for fuzzy comparison (default 0.001 = 0.1%)")
+    tolerance_mode: str = Field(default="relative", description="Mode for tolerance: 'relative', 'absolute', or 'sigfigs'")
+    options: dict = Field(default_factory=dict, description="Additional evaluator-specific options")
 
-        Args:
-            correct_answer: The correct answer to compare against
-            tolerance: Tolerance for fuzzy comparison (default 0.001 = 0.1%)
-            tolerance_mode: Mode for tolerance ("relative", "absolute", "sigfigs")
-            **options: Additional evaluator-specific options
-        """
-        self.correct_answer = correct_answer
-        self.tolerance = tolerance
-        self.tolerance_mode = tolerance_mode
-        self.options = options
+    @field_validator('tolerance_mode')
+    @classmethod
+    def validate_tolerance_mode(cls, v: str) -> str:
+        """Validate that tolerance_mode is one of the allowed values."""
+        valid_modes = {"relative", "absolute", "sigfigs"}
+        if v not in valid_modes:
+            raise ValueError(f"tolerance_mode must be one of {valid_modes}, got '{v}'")
+        return v
 
     @abstractmethod
     def evaluate(self, student_answer: str) -> AnswerResult:
@@ -133,15 +132,19 @@ class AnswerEvaluator(ABC):
         return str(self.correct_answer)
 
 
-class EvaluatorRegistry:
+class EvaluatorRegistry(BaseModel):
     """
     Registry for answer evaluators.
 
     Provides type-based dispatch to appropriate evaluator.
+    Pydantic-based with private attribute management.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def __init__(self) -> None:
         """Initialize empty registry."""
+        super().__init__()
         self._evaluators: dict[str, type[AnswerEvaluator]] = {}
 
     def register(
@@ -153,7 +156,12 @@ class EvaluatorRegistry:
         Args:
             answer_type: Type identifier (e.g., "numeric", "formula")
             evaluator_class: Evaluator class to use for this type
+
+        Raises:
+            TypeError: If evaluator_class is not an AnswerEvaluator subclass
         """
+        if not (isinstance(evaluator_class, type) and issubclass(evaluator_class, AnswerEvaluator)):
+            raise TypeError(f"evaluator_class must be a subclass of AnswerEvaluator, got {evaluator_class}")
         self._evaluators[answer_type] = evaluator_class
 
     def get_evaluator(self, answer_type: str) -> type[AnswerEvaluator] | None:
@@ -192,7 +200,7 @@ class EvaluatorRegistry:
         if evaluator_class is None:
             raise ValueError(f"No evaluator registered for type: {answer_type}")
 
-        return evaluator_class(correct_answer, **options)
+        return evaluator_class(correct_answer=correct_answer, **options)
 
     def get_registered_types(self) -> list[str]:
         """

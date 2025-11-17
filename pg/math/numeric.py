@@ -8,10 +8,91 @@ Reference: lib/Value/Real.pm, lib/Value/Complex.pm, lib/Value/Infinity.pm
 
 from __future__ import annotations
 
+import ast
 import math
 from typing import Any
 
+from pydantic import BaseModel, Field, field_validator, ConfigDict
+
 from .value import MathValue, ToleranceMode, TypePrecedence
+
+
+# Safe namespace with allowed math functions and constants (defined at module level)
+_SAFE_MATH_NAMESPACE = {
+    'pi': math.pi,
+    'e': math.e,
+    'sqrt': math.sqrt,
+    'sin': math.sin,
+    'cos': math.cos,
+    'tan': math.tan,
+    'asin': math.asin,
+    'acos': math.acos,
+    'atan': math.atan,
+    'exp': math.exp,
+    'log': math.log,
+    'log10': math.log10,
+    'abs': abs,
+    '__builtins__': {},
+}
+
+
+def _safe_eval_math_expression(expr: str) -> float:
+    """
+    Safely evaluate a mathematical expression containing only math functions and constants.
+
+    This replaces the unsafe eval() call with AST-based evaluation.
+    Supports: math constants (pi, e), math functions (sqrt, sin, cos, tan, etc),
+    and basic arithmetic operators (+, -, *, /, **)
+
+    Args:
+        expr: Mathematical expression string (e.g., "pi/2", "sqrt(4)")
+
+    Returns:
+        float: Evaluated result
+
+    Raises:
+        ValueError: If expression is invalid or contains unsafe operations
+    """
+    try:
+        # Parse the expression into an AST
+        node = ast.parse(expr, mode='eval')
+
+        # Validate that only safe operations are used
+        for child in ast.walk(node):
+            # Only allow these node types
+            allowed_types = (
+                ast.Expression,
+                ast.BinOp,
+                ast.UnaryOp,
+                ast.Call,
+                ast.Name,
+                ast.Constant,
+                ast.Add,
+                ast.Sub,
+                ast.Mult,
+                ast.Div,
+                ast.Pow,
+                ast.UAdd,
+                ast.USub,
+                ast.Load,  # Context node for variable loading
+            )
+            if not isinstance(child, allowed_types):
+                raise ValueError(f"Unsafe operation in expression: {expr}")
+
+            # Validate that Name nodes only reference allowed identifiers
+            if isinstance(child, ast.Name):
+                if child.id not in _SAFE_MATH_NAMESPACE:
+                    raise ValueError(f"Undefined name '{child.id}' in expression: {expr}")
+
+        # Compile and evaluate the AST
+        code = compile(node, '<string>', 'eval')
+        result = eval(code, _SAFE_MATH_NAMESPACE)
+        return float(result)
+
+    except SyntaxError as e:
+        raise ValueError(f"Invalid expression syntax: {expr}") from e
+    except Exception as e:
+        raise ValueError(f"Could not evaluate expression '{expr}': {e}") from e
 
 
 class Real(MathValue):
@@ -24,9 +105,13 @@ class Real(MathValue):
     Reference: lib/Value/Real.pm
     """
 
-    type_precedence = TypePrecedence.REAL
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    def __init__(self, value: float | int | str, context=None):
+    value: float = Field(description="The numeric value")
+    context: Any = Field(default=None, description="The evaluation context")
+    type_precedence: TypePrecedence = Field(default=TypePrecedence.REAL, init=False)
+
+    def __init__(self, value: float | int | str, context=None, **kwargs):
         """
         Initialize a Real number.
 
@@ -38,34 +123,19 @@ class Real(MathValue):
         if isinstance(value, str):
             try:
                 # Try to evaluate as a simple number first
-                self.value = float(value)
+                float_value = float(value)
             except (ValueError, SyntaxError):
-                # Try to evaluate as a mathematical expression
-                try:
-                    import math as _math
-                    # Create a namespace with math constants
-                    namespace = {
-                        'pi': _math.pi,
-                        'e': _math.e,
-                        'sqrt': _math.sqrt,
-                        'sin': _math.sin,
-                        'cos': _math.cos,
-                        'tan': _math.tan,
-                    }
-                    # Evaluate the expression
-                    self.value = float(eval(value, {"__builtins__": {}}, namespace))
-                except Exception:
-                    # If all else fails, raise the original error
-                    raise ValueError(f"Could not convert '{value}' to a real number")
+                # Try to evaluate as a mathematical expression using safe parser
+                float_value = _safe_eval_math_expression(value)
         else:
-            self.value = float(value)
+            float_value = float(value)
 
-        if context is not None:
-            self.context = context
-        else:
+        if context is None:
             # Import here to avoid circular dependency
             from .context import get_current_context
-            self.context = get_current_context()
+            context = get_current_context()
+
+        super().__init__(value=float_value, context=context, **kwargs)
 
     def promote(self, other: MathValue) -> MathValue:
         """Promote Real to another type."""
@@ -170,6 +240,10 @@ class Real(MathValue):
     def to_python(self) -> float:
         """Convert to Python float."""
         return self.value
+
+    def __str__(self) -> str:
+        """String representation (for str() builtin)."""
+        return self.to_string()
 
     def __float__(self) -> float:
         """Convert to Python float (for float() builtin)."""
@@ -369,9 +443,20 @@ class Complex(MathValue):
     Reference: lib/Value/Complex.pm
     """
 
-    type_precedence = TypePrecedence.COMPLEX
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    def __init__(self, real: float | int, imag: float | int = 0.0, context=None):
+    real: float = Field(description="The real part")
+    imag: float = Field(description="The imaginary part")
+    context: Any = Field(default=None, description="The evaluation context")
+    type_precedence: TypePrecedence = Field(default=TypePrecedence.COMPLEX, init=False)
+
+    def __init__(
+        self,
+        real: float | int | list | tuple | str,
+        imag: float | int = 0.0,
+        context=None,
+        **kwargs
+    ):
         """
         Initialize a Complex number.
 
@@ -383,39 +468,40 @@ class Complex(MathValue):
         # Handle list/tuple arguments (Perl compatibility): Complex([a, b])
         if isinstance(real, (list, tuple)):
             if len(real) >= 2:
-                self.real = float(real[0])
-                self.imag = float(real[1])
+                real_part = float(real[0])
+                imag_part = float(real[1])
             elif len(real) == 1:
-                self.real = float(real[0])
-                self.imag = 0.0
+                real_part = float(real[0])
+                imag_part = 0.0
             else:
-                self.real = 0.0
-                self.imag = 0.0
+                real_part = 0.0
+                imag_part = 0.0
         elif isinstance(real, str):
             # Parse string like "2-4i" or "2+4i"
             import re
             match = re.match(r'([+-]?\d+(?:\.\d+)?)\s*([+-])\s*(\d+(?:\.\d+)?)i', real.replace(' ', ''))
             if match:
-                self.real = float(match.group(1))
+                real_part = float(match.group(1))
                 sign = match.group(2)
-                self.imag = float(match.group(3))
+                imag_part = float(match.group(3))
                 if sign == '-':
-                    self.imag = -self.imag
+                    imag_part = -imag_part
             else:
                 # Try to parse as just real part
                 try:
-                    self.real = float(real)
-                    self.imag = 0.0
+                    real_part = float(real)
+                    imag_part = 0.0
                 except ValueError:
                     raise ValueError(f"Cannot parse complex number from string: {real}")
         else:
-            self.real = float(real)
-            self.imag = float(imag)
-        if context is not None:
-            self.context = context
-        else:
+            real_part = float(real)
+            imag_part = float(imag)
+
+        if context is None:
             from .context import get_current_context
-            self.context = get_current_context()
+            context = get_current_context()
+
+        super().__init__(real=real_part, imag=imag_part, context=context, **kwargs)
 
     def promote(self, other: MathValue) -> MathValue:
         """Complex is high in hierarchy, doesn't promote to much."""
@@ -459,6 +545,10 @@ class Complex(MathValue):
     def to_tex(self) -> str:
         """Convert to LaTeX."""
         # Similar to string, but with proper formatting
+        return self.to_string()
+
+    def __str__(self) -> str:
+        """String representation (for str() builtin)."""
         return self.to_string()
 
     def to_python(self) -> complex:
@@ -632,6 +722,7 @@ class Complex(MathValue):
         return Complex(self.real / magnitude.value, self.imag / magnitude.value, self.context)
 
 
+
 class Infinity(MathValue):
     """
     Infinity value.
@@ -641,28 +732,31 @@ class Infinity(MathValue):
     Reference: lib/Value/Infinity.pm
     """
 
-    type_precedence = TypePrecedence.INFINITY
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    def __init__(self, sign: int = 1, context=None):
-        """
-        Initialize Infinity.
+    sign: int = Field(default=1, description="1 for +inf, -1 for -inf, 0 for undefined")
+    context: Any | None = None
+    type_precedence: TypePrecedence = Field(default=TypePrecedence.INFINITY, init=False)
 
-        Args:
-            sign: 1 for +inf, -1 for -inf, 0 for undefined
-            context: The Context (None = use current default)
-        """
-        if sign > 0:
-            self.sign = 1
-        elif sign < 0:
-            self.sign = -1
-        else:
-            self.sign = 0
-
-        if context is not None:
-            self.context = context
-        else:
+    def __init__(self, sign: int = 1, context=None, **kwargs):
+        resolved_context = context
+        if resolved_context is None:
             from .context import get_current_context
-            self.context = get_current_context()
+            resolved_context = get_current_context()
+        super().__init__(sign=sign, context=resolved_context, **kwargs)
+
+    @field_validator('sign', mode='before')
+    @classmethod
+    def _validate_sign(cls, value: Any) -> int:
+        try:
+            ivalue = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('Infinity sign must be -1, 0, or 1') from exc
+        if ivalue > 0:
+            return 1
+        if ivalue < 0:
+            return -1
+        return 0
 
     def promote(self, other: MathValue) -> MathValue:
         """Infinity doesn't promote."""
@@ -679,144 +773,114 @@ class Infinity(MathValue):
     def to_string(self) -> str:
         """Convert to string."""
         if self.sign == 1:
-            return "inf"
-        elif self.sign == -1:
-            return "-inf"
-        else:
-            return "NaN"
+            return 'inf'
+        if self.sign == -1:
+            return '-inf'
+        return 'NaN'
 
     def to_tex(self) -> str:
         """Convert to LaTeX."""
         if self.sign == 1:
             return r"\infty"
-        elif self.sign == -1:
+        if self.sign == -1:
             return r"-\infty"
-        else:
-            return r"\text{NaN}"
+        return r"	ext{NaN}"
 
     def to_python(self) -> float:
         """Convert to Python float."""
         if self.sign == 1:
-            return float("inf")
-        elif self.sign == -1:
-            return float("-inf")
-        else:
-            return float("nan")
-
-    # Arithmetic operators
+            return float('inf')
+        if self.sign == -1:
+            return float('-inf')
+        return float('nan')
 
     def __add__(self, other: Any) -> MathValue:
         """Addition with infinity."""
         if isinstance(other, (int, float, Real)):
             return self
-        elif isinstance(other, Infinity):
+        if isinstance(other, Infinity):
             if self.sign == other.sign:
                 return self
-            else:
-                # inf + (-inf) = undefined
-                return Infinity(0, self.context)
-        else:
-            return NotImplemented
+            return Infinity(0, self.context)
+        return NotImplemented
 
     def __radd__(self, other: Any) -> MathValue:
-        """Right addition."""
         return self.__add__(other)
 
     def __sub__(self, other: Any) -> MathValue:
         """Subtraction."""
         if isinstance(other, (int, float, Real)):
             return self
-        elif isinstance(other, Infinity):
+        if isinstance(other, Infinity):
             if self.sign == -other.sign:
                 return self
-            else:
-                # inf - inf = undefined
-                return Infinity(0, self.context)
-        else:
-            return NotImplemented
+            return Infinity(0, self.context)
+        return NotImplemented
 
     def __rsub__(self, other: Any) -> MathValue:
-        """Right subtraction."""
         return -self
 
     def __mul__(self, other: Any) -> MathValue:
         """Multiplication."""
         if isinstance(other, (int, float)):
             if other == 0:
-                return Infinity(0, self.context)  # 0 * inf = undefined
+                return Infinity(0, self.context)
             return Infinity(self.sign * (1 if other > 0 else -1), self.context)
-        elif isinstance(other, Real):
+        if isinstance(other, Real):
             if other.value == 0:
                 return Infinity(0, self.context)
             return Infinity(self.sign * (1 if other.value > 0 else -1), self.context)
-        elif isinstance(other, Infinity):
+        if isinstance(other, Infinity):
             return Infinity(self.sign * other.sign, self.context)
-        else:
-            return NotImplemented
+        return NotImplemented
 
     def __rmul__(self, other: Any) -> MathValue:
-        """Right multiplication."""
         return self.__mul__(other)
 
     def __truediv__(self, other: Any) -> MathValue:
         """Division."""
         if isinstance(other, (int, float, Real)):
             return self
-        elif isinstance(other, Infinity):
-            return Infinity(0, self.context)  # inf / inf = undefined
-        else:
-            return NotImplemented
+        if isinstance(other, Infinity):
+            return Infinity(0, self.context)
+        return NotImplemented
 
     def __rtruediv__(self, other: Any) -> MathValue:
-        """Right division."""
-        # n / inf = 0
         return Real(0.0, self.context)
 
     def __pow__(self, other: Any) -> MathValue:
         """Exponentiation."""
         if isinstance(other, (int, float, Real)):
-            # inf^positive = inf, inf^negative = 0, inf^0 = undefined
-            if isinstance(other, Real):
-                exp = other.value
-            else:
-                exp = other
-
+            exp = other.value if isinstance(other, Real) else other
             if exp > 0:
                 return self
-            elif exp < 0:
+            if exp < 0:
                 return Real(0.0, self.context)
-            else:
-                return Infinity(0, self.context)  # undefined
-        else:
-            return NotImplemented
+            return Infinity(0, self.context)
+        return NotImplemented
 
     def __rpow__(self, other: Any) -> MathValue:
-        """Right exponentiation."""
-        # base^inf
         if isinstance(other, (int, float, Real)):
             base = other.value if isinstance(other, Real) else other
             if abs(base) > 1:
                 return self
-            elif abs(base) < 1:
+            if abs(base) < 1:
                 return Real(0.0, self.context)
-            else:
-                return Infinity(0, self.context)  # undefined
-        else:
-            return NotImplemented
+            return Infinity(0, self.context)
+        return NotImplemented
 
     def __neg__(self) -> Infinity:
-        """Unary negation."""
         return Infinity(-self.sign, self.context)
 
     def __pos__(self) -> Infinity:
-        """Unary positive."""
         return self
 
     def __abs__(self) -> Infinity:
-        """Absolute value."""
         if self.sign == 0:
             return self
         return Infinity(1, self.context)
+
+
 
 
 # Helper function for fuzzy comparison
@@ -867,3 +931,8 @@ def fuzzy_compare(a: float, b: float, tolerance: float, mode: str) -> bool:
 
     else:
         raise ValueError(f"Unknown tolerance mode: {mode}")
+
+
+
+
+

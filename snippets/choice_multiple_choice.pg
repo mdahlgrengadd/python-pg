@@ -1,0 +1,26 @@
+DOCUMENT();
+loadMacros("PGstandard.pl", "PGchoicemacros.pl");
+TEXT(beginproblem());
+
+$mc = new_multiple_choice();
+$mc->qa(
+    "What is 2 + 2?",
+    "4"
+);
+$mc->extra(
+    "3",
+    "5",
+    "22"
+);
+$mc->makeLast("None of the above");
+
+BEGIN_TEXT
+\{$mc->print_q()\}
+$BR
+\{$mc->print_a()\}
+END_TEXT
+
+ANS(radio_cmp($mc->correct_ans()));
+
+ENDDOCUMENT();
+

@@ -13,12 +13,12 @@ Reference: lib/AnswerHash.pm (lines 1-300) in legacy Perl codebase
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, field_validator, StrictBool
 
-@dataclass
-class AnswerResult:
+
+class AnswerResult(BaseModel):
     """
     Result of answer evaluation.
 
@@ -29,7 +29,7 @@ class AnswerResult:
         score: Correctness score (0.0 = wrong, 1.0 = correct, partial credit in between)
         correct: Boolean indicating if answer is considered correct
         student_answer: Student's answer (original input)
-        correct_answer: The correct answer (for display)
+        student_correct_answer: The correct answer (for display)
         answer_message: Primary feedback message shown to student
         messages: List of additional feedback messages
         type: Type of answer (numeric, formula, string, etc.)
@@ -41,40 +41,42 @@ class AnswerResult:
         metadata: Additional metadata for debugging/analysis
     """
 
+    model_config = ConfigDict(validate_assignment=True)
+
     # Core fields (always present)
-    score: float = 0.0  # 0.0 to 1.0
-    correct: bool = False  # True if score >= 1.0 (or custom threshold)
+    score: float = 0.0
+    correct: StrictBool = False
 
     # Student/correct answer fields
-    student_answer: str = ""  # Parsed/normalized student answer
-    correct_answer: str = ""  # Correct answer for display
-    original_student_answer: str = ""  # Raw student input
+    student_answer: str = ""
+    student_correct_answer: str = ""
+    original_student_answer: str = ""
 
     # Feedback messages
-    answer_message: str = ""  # Primary message
-    messages: list[str] = field(default_factory=list)  # Additional messages
+    answer_message: str = ""
+    messages: list[str] = []
 
     # Answer type and preview
-    type: str = "unknown"  # numeric, formula, string, interval, vector, etc.
-    preview: str = ""  # LaTeX or HTML preview
+    type: str = "unknown"
+    preview: str = ""
 
     # Error handling
-    error_message: str = ""  # Error description
-    error_flag: bool = False  # True if evaluation failed
-    typeError: bool = False  # True if type mismatch (Perl parity)
+    error_message: str = ""
+    error_flag: bool = False
+    typeError: bool = False
 
     # Answer blank identification
-    ans_label: str = ""  # e.g., "ans_1", "ans_2"
+    ans_label: str = ""
 
     # MathObject references (for parity with Perl AnswerHash)
-    correct_value: Any = None  # MathObject reference for correct answer
-    student_value: Any = None  # MathObject reference for parsed student answer
-    student_formula: Any = None  # Formula reference for student answer (if applicable)
+    correct_value: Any = None
+    student_value: Any = None
+    student_formula: Any = None
 
     # Metadata for debugging/extensions
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = {}
 
-    def __post_init__(self) -> None:
+    def model_post_init(self, __context: Any) -> None:
         """Validate and normalize fields after initialization."""
         # Ensure score is in valid range
         self.score = max(0.0, min(1.0, self.score))
@@ -84,11 +86,49 @@ class AnswerResult:
             self.correct = True
         elif self.score <= 0.0:
             self.correct = False
-        # Otherwise keep custom correct value (for custom thresholds)
+
+        # Backfill original answer if we only captured a parsed version
+        if not self.original_student_answer and self.student_answer:
+            self.original_student_answer = self.student_answer
+
+        if self.score >= 1.0:
+            self.correct = True
+        elif self.score <= 0.0:
+            self.correct = False
+
+    @field_validator("score")
+    @classmethod
+    def validate_score(cls, v: float) -> float:
+        """Validate score is in valid range."""
+        if not isinstance(v, (int, float)):
+            raise ValueError("score must be numeric")
+        if v < 0.0 or v > 1.0:
+            raise ValueError("score must be between 0.0 and 1.0")
+        return float(v)
+
+    @field_validator("messages", mode="before")
+    @classmethod
+    def validate_messages(cls, v: Any) -> list[str]:
+        """Ensure messages is a list."""
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            raise ValueError("messages must be a list")
+        return v
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def validate_metadata(cls, v: Any) -> dict[str, Any]:
+        """Ensure metadata is a dict."""
+        if v is None:
+            return {}
+        if not isinstance(v, dict):
+            raise ValueError("metadata must be a dict")
+        return v
 
     def add_message(self, message: str) -> None:
         """Add a feedback message."""
-        if message and message not in self.messages:
+        if message and message.strip() and message not in self.messages:
             self.messages.append(message)
 
     def set_error(self, error: str) -> None:
@@ -116,7 +156,9 @@ class AnswerResult:
 
     def is_blank(self) -> bool:
         """Check if student answer is blank."""
-        return not self.original_student_answer.strip()
+        return not (
+            self.original_student_answer.strip() or self.student_answer.strip()
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """
@@ -129,7 +171,7 @@ class AnswerResult:
             "score": self.score,
             "correct": self.correct,
             "student_answer": self.student_answer,
-            "correct_answer": self.correct_answer,
+            "student_correct_answer": self.student_correct_answer,
             "original_student_answer": self.original_student_answer,
             "answer_message": self.answer_message,
             "messages": self.messages,
@@ -141,7 +183,7 @@ class AnswerResult:
             "ans_label": self.ans_label,
             "metadata": self.metadata,
         }
-        
+
         # Add MathObject references as strings (for serialization)
         if self.correct_value is not None:
             result["correct_value"] = str(self.correct_value)
@@ -149,7 +191,7 @@ class AnswerResult:
             result["student_value"] = str(self.student_value)
         if self.student_formula is not None:
             result["student_formula"] = str(self.student_formula)
-        
+
         return result
 
     @classmethod
@@ -163,11 +205,13 @@ class AnswerResult:
         Returns:
             AnswerResult instance
         """
+        # Handle legacy field name
+        correct_answer = data.get("student_correct_answer") or data.get("correct_answer", "")
         return cls(
             score=data.get("score", 0.0),
             correct=data.get("correct", False),
             student_answer=data.get("student_answer", ""),
-            correct_answer=data.get("correct_answer", ""),
+            student_correct_answer=correct_answer,
             original_student_answer=data.get("original_student_answer", ""),
             answer_message=data.get("answer_message", ""),
             messages=data.get("messages", []),
@@ -180,7 +224,7 @@ class AnswerResult:
         )
 
     @classmethod
-    def correct_answer(
+    def answer_correct(
         cls,
         student_ans: str,
         correct_ans: str,
@@ -203,13 +247,13 @@ class AnswerResult:
             score=1.0,
             correct=True,
             student_answer=student_ans,
-            correct_answer=correct_ans,
+            student_correct_answer=correct_ans,
             type=answer_type,
             answer_message=message or "Correct!",
         )
 
     @classmethod
-    def incorrect_answer(
+    def answer_incorrect(
         cls,
         student_ans: str,
         correct_ans: str,
@@ -232,13 +276,13 @@ class AnswerResult:
             score=0.0,
             correct=False,
             student_answer=student_ans,
-            correct_answer=correct_ans,
+            student_correct_answer=correct_ans,
             type=answer_type,
             answer_message=message or "Incorrect.",
         )
 
     @classmethod
-    def error_answer(
+    def answer_error(
         cls,
         student_ans: str,
         error: str,
@@ -266,7 +310,7 @@ class AnswerResult:
         return result
 
     @classmethod
-    def partial_credit_answer(
+    def answer_partial(
         cls,
         score: float,
         student_ans: str,
@@ -289,9 +333,54 @@ class AnswerResult:
         """
         return cls(
             score=score,
-            correct=False,  # Not fully correct
+            correct=False,
             student_answer=student_ans,
-            correct_answer=correct_ans,
+            student_correct_answer=correct_ans,
             type=answer_type,
             answer_message=message or f"Partially correct ({score * 100:.0f}%).",
         )
+
+    # Legacy method names for backward compatibility
+    @classmethod
+    def correct_answer(
+        cls,
+        student_ans: str,
+        correct_ans: str,
+        answer_type: str = "unknown",
+        message: str = "",
+    ) -> AnswerResult:
+        """Legacy alias for answer_correct()."""
+        return cls.answer_correct(student_ans, correct_ans, answer_type, message)
+
+    @classmethod
+    def incorrect_answer(
+        cls,
+        student_ans: str,
+        correct_ans: str,
+        answer_type: str = "unknown",
+        message: str = "",
+    ) -> AnswerResult:
+        """Legacy alias for answer_incorrect()."""
+        return cls.answer_incorrect(student_ans, correct_ans, answer_type, message)
+
+    @classmethod
+    def error_answer(
+        cls,
+        student_ans: str,
+        error: str,
+        answer_type: str = "unknown",
+    ) -> AnswerResult:
+        """Legacy alias for answer_error()."""
+        return cls.answer_error(student_ans, error, answer_type)
+
+    @classmethod
+    def partial_credit_answer(
+        cls,
+        score: float,
+        student_ans: str,
+        correct_ans: str,
+        answer_type: str = "unknown",
+        message: str = "",
+    ) -> AnswerResult:
+        """Legacy alias for answer_partial()."""
+        return cls.answer_partial(score, student_ans, correct_ans, answer_type, message)
