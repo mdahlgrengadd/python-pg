@@ -148,7 +148,10 @@ class FirstAnswerGrader(Grader):
 
     Problem score is based only on the first answer blank.
     Useful for problems with one primary answer and auxiliary blanks.
+    Pydantic-based grader.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
     def grade(self, answers: list[AnswerResult]) -> float:
         """
@@ -172,7 +175,10 @@ class MinimumGrader(Grader):
 
     Problem score is the minimum of all answer scores.
     Useful when all parts are equally critical.
+    Pydantic-based grader.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
     def grade(self, answers: list[AnswerResult]) -> float:
         """
@@ -195,16 +201,24 @@ class CustomGrader(Grader):
     Custom grader using user-provided function.
 
     Allows arbitrary grading logic via a callback function.
+    Pydantic-based with callable field.
     """
 
-    def __init__(self, grading_function: callable):
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    grading_function: Optional[Any] = Field(
+        default=None,
+        description="Function taking list[AnswerResult] → float"
+    )
+
+    def __init__(self, grading_function: Optional[Any] = None, **kwargs):
         """
         Initialize custom grader.
 
         Args:
             grading_function: Function taking list[AnswerResult] → float
         """
-        self.grading_function = grading_function
+        super().__init__(grading_function=grading_function, **kwargs)
 
     def grade(self, answers: list[AnswerResult]) -> float:
         """
