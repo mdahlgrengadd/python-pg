@@ -1,28 +1,28 @@
 """
-Comprehensive tests for FormulaEnhanced and FormulaUpToConstant Pydantic conversions.
+Comprehensive tests for Formula and FormulaUpToConstant Pydantic conversions.
 
 Tests verify:
 - Pydantic field definitions and validation
 - Backward API compatibility
 - Feature functionality
-- Integration with Formula base class
+- Integration with FormulaBase base class
 """
 
 import pytest
 import random
-from pg.math.formula_enhanced import FormulaEnhanced, UNDEF_VALUE
+from pg.math.formula import Formula, UNDEF_VALUE
 from pg.math.formula_up_to_constant import FormulaUpToConstant
-from pg.math.formula import Formula
+from pg.math.formula import FormulaBase
 from pg.math.context import get_context
 from pg.math.numeric import Real
 
 
-class TestFormulaEnhancedPydantic:
-    """Test Pydantic field definitions and validation for FormulaEnhanced."""
+class TestFormulaPydantic:
+    """Test Pydantic field definitions and validation for Formula."""
 
     def test_basic_instantiation(self):
-        """Test creating FormulaEnhanced with basic parameters."""
-        f = FormulaEnhanced("x^2 + 1", variables=['x'])
+        """Test creating Formula with basic parameters."""
+        f = Formula("x^2 + 1", variables=['x'])
         assert f.expression == "x^2 + 1"
         assert 'x' in f.variables
         assert f.granularity == 1000
@@ -31,7 +31,7 @@ class TestFormulaEnhancedPydantic:
 
     def test_field_definitions(self):
         """Test that Pydantic fields are properly defined."""
-        f = FormulaEnhanced(
+        f = Formula(
             "a*x + b",
             variables=['x'],
             granularity=500,
@@ -47,15 +47,15 @@ class TestFormulaEnhancedPydantic:
     def test_granularity_validation(self):
         """Test that granularity must be positive."""
         with pytest.raises(ValueError):
-            FormulaEnhanced("x", granularity=0)
+            Formula("x", granularity=0)
 
         with pytest.raises(ValueError):
-            FormulaEnhanced("x", granularity=-1)
+            Formula("x", granularity=-1)
 
     def test_parameters_default_factory(self):
         """Test that parameters defaults to empty list."""
-        f1 = FormulaEnhanced("x")
-        f2 = FormulaEnhanced("y")
+        f1 = Formula("x")
+        f2 = Formula("y")
         # Ensure defaults don't share state
         assert f1.parameters is not f2.parameters
         f1.parameters.append('p')
@@ -63,13 +63,13 @@ class TestFormulaEnhancedPydantic:
 
     def test_max_undefined_default(self):
         """Test max_undefined defaults to num_test_points if None."""
-        f = FormulaEnhanced("x", num_test_points=10)
+        f = Formula("x", num_test_points=10)
         # When not provided, max_undefined defaults to num_test_points
         assert f.max_undefined == 10
 
     def test_inherit_formula_fields(self):
-        """Test that FormulaEnhanced inherits Formula fields."""
-        f = FormulaEnhanced(
+        """Test that Formula inherits Formula fields."""
+        f = Formula(
             "x^2",
             variables=['x'],
             num_test_points=7,
@@ -79,19 +79,19 @@ class TestFormulaEnhancedPydantic:
         assert f.limits == {'x': (-5, 5)}
 
 
-class TestFormulaEnhancedFeatures:
-    """Test FormulaEnhanced features work with Pydantic fields."""
+class TestFormulaFeatures:
+    """Test Formula features work with Pydantic fields."""
 
     def test_create_random_points_basic(self):
         """Test random point generation."""
-        f = FormulaEnhanced("x^2", variables=['x'])
+        f = Formula("x^2", variables=['x'])
         points = f.create_random_points(n=5)
         assert len(points) == 5
         assert all(isinstance(p, list) for p in points)
 
     def test_create_random_points_with_limits(self):
         """Test random points respect variable limits."""
-        f = FormulaEnhanced(
+        f = Formula(
             "x^2",
             variables=['x'],
             limits={'x': (0, 10)}
@@ -102,7 +102,7 @@ class TestFormulaEnhancedFeatures:
 
     def test_granularity_application(self):
         """Test granularity affects point values."""
-        f = FormulaEnhanced(
+        f = Formula(
             "x",
             variables=['x'],
             granularity=10,  # 10 steps in range
@@ -115,7 +115,7 @@ class TestFormulaEnhancedFeatures:
 
     def test_create_point_values(self):
         """Test evaluating formula at test points."""
-        f = FormulaEnhanced("x^2", variables=['x'])
+        f = Formula("x^2", variables=['x'])
         points = [[1], [2], [3]]
         values = f.create_point_values(points)
         assert values is not None
@@ -127,7 +127,7 @@ class TestFormulaEnhancedFeatures:
 
     def test_python_function_generation(self):
         """Test Python function generation from formula."""
-        f = FormulaEnhanced("x^2 + 2*x + 1", variables=['x'])
+        f = Formula("x^2 + 2*x + 1", variables=['x'])
         func = f.python_function()
         assert func(0) == 1
         assert func(1) == 4
@@ -135,33 +135,33 @@ class TestFormulaEnhancedFeatures:
 
     def test_python_function_caching(self):
         """Test that Python functions are cached."""
-        f = FormulaEnhanced("x^2", variables=['x'])
+        f = Formula("x^2", variables=['x'])
         func1 = f.python_function()
         func2 = f.python_function()
         assert func1 is func2  # Same object due to caching
 
     def test_uses_one_of_with_parameters(self):
         """Test uses_one_of method with parameters."""
-        f = FormulaEnhanced("a*x + b", parameters=['a', 'b'], variables=['x'])
+        f = Formula("a*x + b", parameters=['a', 'b'], variables=['x'])
         assert f.uses_one_of('a') is True
         assert f.uses_one_of('b') is True
         assert f.uses_one_of('x') is True
         assert f.uses_one_of('y') is False
 
 
-class TestFormulaEnhancedAdaptiveParameters:
+class TestFormulaAdaptiveParameters:
     """Test adaptive parameter solving with Pydantic fields."""
 
     def test_adapt_parameters_checks_parameters_exist(self):
         """Test that adapt_parameters returns False without parameters."""
-        f = FormulaEnhanced("2*x", parameters=[])
-        student = FormulaEnhanced("2*x")
+        f = Formula("2*x", parameters=[])
+        student = Formula("2*x")
         result = f.adapt_parameters(student)
         assert result is False
 
     def test_adapt_parameters_simple_case(self):
         """Test adaptive parameter solving for simple linear case."""
-        f = FormulaEnhanced("a*x", parameters=['a'], variables=['x'])
+        f = Formula("a*x", parameters=['a'], variables=['x'])
         # This would solve for 'a' when comparing with student's formula
         # For now, just test that the method exists and can be called
         assert callable(f.adapt_parameters)
@@ -243,7 +243,8 @@ class TestFormulaUpToConstantFeatures:
         """Test that differentiating returns Formula without constant."""
         f = FormulaUpToConstant("x^2/2 + C")
         df = f.diff('x')
-        assert isinstance(df, Formula)
+        # diff() returns a FormulaBase (the parent class)
+        assert isinstance(df, FormulaBase)
         assert not isinstance(df, FormulaUpToConstant)
 
     def test_cmp_method_returns_callable(self):
@@ -266,8 +267,8 @@ class TestBackwardCompatibility:
     """Test backward compatibility of both enhanced formula classes."""
 
     def test_formula_enhanced_is_formula_subclass(self):
-        """Test that FormulaEnhanced is a Formula subclass."""
-        f = FormulaEnhanced("x^2")
+        """Test that Formula is a Formula subclass."""
+        f = Formula("x^2")
         assert isinstance(f, Formula)
 
     def test_formula_up_to_constant_is_formula_subclass(self):
@@ -276,8 +277,8 @@ class TestBackwardCompatibility:
         assert isinstance(f, Formula)
 
     def test_formula_enhanced_supports_eval(self):
-        """Test that eval() method works on FormulaEnhanced."""
-        f = FormulaEnhanced("x^2 + 1", variables=['x'])
+        """Test that eval() method works on Formula."""
+        f = Formula("x^2 + 1", variables=['x'])
         result = f.eval(x=3)
         assert float(result) == 10
 
@@ -288,8 +289,8 @@ class TestBackwardCompatibility:
         assert float(result) == 9  # 4 + 5
 
     def test_formula_enhanced_cmp_compatibility(self):
-        """Test that cmp() works on FormulaEnhanced."""
-        f = FormulaEnhanced("x^2", variables=['x'])
+        """Test that cmp() works on Formula."""
+        f = Formula("x^2", variables=['x'])
         # Should have cmp method from Formula
         assert hasattr(f, 'cmp')
 
@@ -306,7 +307,7 @@ class TestPydanticValidation:
 
     def test_validate_assignment_on_formula_enhanced(self):
         """Test that field assignment triggers validation."""
-        f = FormulaEnhanced("x", granularity=500)
+        f = Formula("x", granularity=500)
         # Try to set invalid granularity
         with pytest.raises(ValueError):
             f.granularity = 0
@@ -315,13 +316,13 @@ class TestPydanticValidation:
         """Test that arbitrary types are allowed in Pydantic fields."""
         ctx = get_context('Numeric')
         # Should not raise error despite having 'Any' context field
-        f = FormulaEnhanced("x", context=ctx)
+        f = Formula("x", context=ctx)
         assert f.context is ctx
 
     def test_extra_fields_allowed(self):
         """Test that extra fields are allowed."""
         # Formula classes allow extra='allow' in config
-        f = FormulaEnhanced("x", custom_field="custom_value")
+        f = Formula("x", custom_field="custom_value")
         # Should not raise validation error
 
 
@@ -329,9 +330,9 @@ class TestIntegration:
     """Integration tests for enhanced formula classes."""
 
     def test_formula_enhanced_with_context(self):
-        """Test FormulaEnhanced with mathematical context."""
+        """Test Formula with mathematical context."""
         ctx = get_context('Numeric')
-        f = FormulaEnhanced("sin(x)", context=ctx, variables=['x'])
+        f = Formula("sin(x)", context=ctx, variables=['x'])
         points = f.create_random_points(n=3)
         values = f.create_point_values(points)
         assert values is not None
@@ -345,8 +346,8 @@ class TestIntegration:
         assert 'x' in f.variables
 
     def test_formula_enhanced_multiple_variables(self):
-        """Test FormulaEnhanced with multiple variables."""
-        f = FormulaEnhanced(
+        """Test Formula with multiple variables."""
+        f = Formula(
             "x*y + z",
             variables=['x', 'y', 'z'],
             limits={
@@ -359,8 +360,8 @@ class TestIntegration:
         assert all(len(p) == 3 for p in points)
 
     def test_formula_enhanced_parameter_in_expression(self):
-        """Test FormulaEnhanced with parameters in expression."""
-        f = FormulaEnhanced(
+        """Test Formula with parameters in expression."""
+        f = Formula(
             "a*x^2 + b*x + c",
             variables=['x'],
             parameters=['a', 'b', 'c']
@@ -376,8 +377,8 @@ class TestEdgeCases:
     """Test edge cases and boundary conditions."""
 
     def test_formula_enhanced_no_variables(self):
-        """Test FormulaEnhanced with constant expression."""
-        f = FormulaEnhanced("5")
+        """Test Formula with constant expression."""
+        f = Formula("5")
         points = f.create_random_points(n=3)
         # With no variables, returns single empty point
         assert len(points) == 1
@@ -392,13 +393,13 @@ class TestEdgeCases:
     def test_formula_enhanced_with_reserved_names(self):
         """Test that reserved names are handled correctly."""
         # 'e' and 'pi' should not be treated as variables
-        f = FormulaEnhanced("e^x + pi", variables=['x'])
+        f = Formula("e^x + pi", variables=['x'])
         assert 'e' not in f.variables
         assert 'pi' not in f.variables
 
     def test_undefined_points_tracking(self):
         """Test that undefined points are tracked correctly."""
-        f = FormulaEnhanced(
+        f = Formula(
             "1/x",
             variables=['x'],
             check_undefined_points=True,
@@ -412,9 +413,9 @@ class TestModelConfig:
     """Test Pydantic model configuration."""
 
     def test_formula_enhanced_has_correct_config(self):
-        """Test FormulaEnhanced model_config is set correctly."""
-        assert hasattr(FormulaEnhanced, 'model_config')
-        config = FormulaEnhanced.model_config
+        """Test Formula model_config is set correctly."""
+        assert hasattr(Formula, 'model_config')
+        config = Formula.model_config
         assert config['arbitrary_types_allowed'] is True
         assert config['validate_assignment'] is True
 
@@ -429,13 +430,13 @@ class TestModelConfig:
         """Test that field constraints are enforced."""
         # granularity must be gt 0
         with pytest.raises(ValueError):
-            FormulaEnhanced("x", granularity=-1)
+            Formula("x", granularity=-1)
 
         with pytest.raises(ValueError):
-            FormulaEnhanced("x", granularity=0)
+            Formula("x", granularity=0)
 
         # But positive values should work
-        f = FormulaEnhanced("x", granularity=1)
+        f = Formula("x", granularity=1)
         assert f.granularity == 1
 
 
