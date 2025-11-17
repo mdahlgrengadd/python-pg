@@ -8,35 +8,39 @@ Lark grammar to rewrite Perl‑like code into Python.  The primary
 motivation is to replace the brittle regex based line transformations
 with a more structured approach.
 
-REFACTORED ARCHITECTURE:
-The preprocessor has been refactored into modular components for better
-maintainability and testability. See REFACTORING_SUMMARY.md for details.
-
-Extracted modules:
-- pg_grammar.py: Lark grammar definition
-- pg_transformer.py: AST transformation to IR
-- pg_block_extractor.py: BEGIN_TEXT/PGML block extraction
-- pg_text_processor.py: Text preprocessing (heredocs, interpolation)
-- pg_pygments_rewriter.py: Fallback token-level rewriting
-- pg_ir_emitter.py: IR to Python code generation
-
 The high level flow of preprocessing is as follows:
 
-1. Text preprocessing (heredocs, dereferences, string interpolation)
-2. Split input into lines with line number mapping
-3. Extract special blocks (BEGIN_TEXT/BEGIN_PGML/etc.) and store them
-4. Parse remaining code with Lark grammar
-5. Transform parse tree to intermediate representation (IR)
-6. Emit Python code from IR
-7. Fallback to Pygments rewriting for unparseable constructs
-8. Join rewritten code with extracted blocks
+1. Split the input into individual lines and maintain a mapping
+   between output line numbers and original source line numbers.
+2. Detect and extract special blocks (BEGIN_TEXT/BEGIN_PGML/etc.)
+   using the same patterns as the original implementation.  These
+   blocks are stored in the result object and replaced in the
+   generated code with appropriate calls to TEXT(), PGML(),
+   SOLUTION() or HINT() as before.
+3. Any code that is not part of a special block is passed through
+   a new `_compile_line` method which attempts to parse the line
+   using a small Lark grammar.  If parsing succeeds, the AST is
+   lowered into Python using helper functions.  If the parser
+   raises an exception (for example because the line contains
+   constructs outside of the grammar), the line is rewritten using
+   a Pygments based fallback that performs conservative token
+   replacements (sigil removal, `->`/`::` to `.`, hash indexing and
+   fat comma handling).  Comments are preserved where possible.
 
-The grammar covers common Perl constructs: assignments, declarations,
-control flow, function calls, and PG-specific functions. It is intentionally
-permissive—unknown constructs fall back to Pygments rewriting.
+4. The rewritten code is joined into a single Python string and
+   returned along with the text blocks and line map.
 
-Note: This implementation requires `lark` and `pygments` packages.
-Install via: pip install lark==1.1.5 pygments==2.18.0
+The grammar implemented here covers a subset of the Perl syntax
+commonly encountered in PG files: assignments, declarations, simple
+function calls, and document control functions.  It is intentionally
+permissive—unknown constructs are either passed through to the
+fallback rewrite or emitted as comments in the generated code so that
+information is never silently lost.
+
+Note: This implementation assumes that the `lark` and `pygments`
+packages are available.  If they are not installed, please install
+them into your Python environment (for example via `pip install
+lark==1.1.5 pygments==2.18.0`).
 
 """
 
@@ -102,20 +106,6 @@ class PGPreprocessor:
     :class:`PreprocessResult` containing the generated code, the
     extracted text blocks, and a map from output lines to original
     source lines.
-
-    REFACTORING NOTE:
-    Key functionality has been extracted into separate modules for better
-    maintainability. The following modules are now available for independent use:
-
-    - pg_grammar: Grammar definition (get_pg_grammar())
-    - pg_transformer: AST to IR transformation (create_pg_transformer())
-    - pg_block_extractor: Block extraction (PGBlockExtractor)
-    - pg_text_processor: Text preprocessing (PGTextProcessor)
-    - pg_pygments_rewriter: Fallback rewriting (PGPygmentsRewriter)
-    - pg_ir_emitter: Code generation (PGIREmitter)
-
-    These modules can be used independently for testing, customization, or
-    building alternative preprocessors. See REFACTORING_SUMMARY.md for details.
     """
 
     # Block markers used to detect special PG sections
