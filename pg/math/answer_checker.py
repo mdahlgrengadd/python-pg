@@ -5,25 +5,31 @@ Provides answer checking functionality for Formula objects in pg_math.
 Ported from pg.mathobjects for Perl parity migration.
 """
 
-from typing import Any, Dict
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from typing import Any, Callable, Dict, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
 import random
 import sympy as sp
 
 
-class AnswerChecker:
-    """Base class for answer checkers."""
+class AnswerChecker(BaseModel, ABC):
+    """
+    Base class for answer checkers.
 
-    def __init__(self, correct_value, **options):
-        """
-        Create an answer checker.
+    Pydantic-based answer checker with validation and type safety.
+    Supports method chaining and post-filtering.
+    """
 
-        Args:
-            correct_value: The correct answer
-            **options: Checker options
-        """
-        self.correct_value = correct_value
-        self.options = options
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
+    correct_value: Any = Field(description="The correct answer")
+    options: dict = Field(default_factory=dict, description="Checker options dict")
+    post_filter: Optional[Callable] = Field(default=None, description="Post-processing filter function")
+
+    @abstractmethod
     def check(self, student_answer: str) -> Dict[str, Any]:
         """
         Check a student answer.
@@ -36,7 +42,7 @@ class AnswerChecker:
         """
         raise NotImplementedError("Subclass must implement check()")
 
-    def withPostFilter(self, filter_function):
+    def withPostFilter(self, filter_function: Callable) -> AnswerChecker:
         """
         Add post-processing filter (stub implementation).
 
@@ -59,7 +65,13 @@ class FormulaAnswerChecker(AnswerChecker):
     Answer checker for Formula objects.
 
     Compares formulas by testing them at multiple points.
+    Pydantic-based with field validators for option extraction.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    num_points: int = Field(default=5, ge=1, description="Number of test points for formula comparison")
+    tolerance: float = Field(default=0.01, gt=0, description="Tolerance for formula comparison")
 
     def __init__(self, correct_value, **options):
         """
@@ -69,9 +81,16 @@ class FormulaAnswerChecker(AnswerChecker):
             correct_value: The correct Formula
             **options: Checker options (num_points, tolerance)
         """
-        super().__init__(correct_value, **options)
-        self.num_points = options.get('num_points', 5)
-        self.tolerance = options.get('tolerance', 0.01)
+        # Extract num_points and tolerance from options if not provided directly
+        num_points = options.pop('num_points', None)
+        tolerance = options.pop('tolerance', None)
+
+        super().__init__(
+            correct_value=correct_value,
+            options=options,
+            num_points=num_points or 5,
+            tolerance=tolerance or 0.01
+        )
 
     def check(self, student_answer: str) -> Dict[str, Any]:
         """
@@ -227,7 +246,13 @@ class RealAnswerChecker(AnswerChecker):
     Answer checker for Real numbers.
 
     Compares real numbers with tolerance.
+    Pydantic-based with context-aware default extraction via model_post_init.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    tolerance: Optional[float] = Field(default=None, gt=0, description="Tolerance for real number comparison")
+    tol_type: Optional[str] = Field(default=None, description="Tolerance type: 'relative', 'absolute', or 'sigfigs'")
 
     def __init__(self, correct_value, **options):
         """
@@ -237,15 +262,36 @@ class RealAnswerChecker(AnswerChecker):
             correct_value: The correct Real number
             **options: Checker options (tolerance, tolType)
         """
-        super().__init__(correct_value, **options)
-        # Get tolerance from options or context
-        tolerance_from_context = correct_value.context.flags.get('tolerance')
-        self.tolerance = options.get(
-            'tolerance', tolerance_from_context if tolerance_from_context is not None else 0.001)
+        # Extract tolerance and tol_type from options
+        tolerance = options.pop('tolerance', None)
+        tol_type = options.pop('tolType', None)
 
-        tol_type_from_context = correct_value.context.flags.get('tolType')
-        self.tol_type = options.get(
-            'tolType', tol_type_from_context if tol_type_from_context is not None else 'relative')
+        super().__init__(
+            correct_value=correct_value,
+            options=options,
+            tolerance=tolerance,
+            tol_type=tol_type
+        )
+
+    def model_post_init(self, __context: Any) -> None:
+        """Extract tolerance and tol_type from context if not provided."""
+        # Extract tolerance from context if not provided
+        if self.tolerance is None:
+            if hasattr(self.correct_value, 'context') and self.correct_value.context is not None:
+                ctx_tolerance = self.correct_value.context.flags.get('tolerance')
+                if ctx_tolerance is not None:
+                    self.tolerance = ctx_tolerance
+        if self.tolerance is None:
+            self.tolerance = 0.001
+
+        # Extract tol_type from context if not provided
+        if self.tol_type is None:
+            if hasattr(self.correct_value, 'context') and self.correct_value.context is not None:
+                ctx_tol_type = self.correct_value.context.flags.get('tolType')
+                if ctx_tol_type is not None:
+                    self.tol_type = ctx_tol_type
+        if self.tol_type is None:
+            self.tol_type = 'relative'
 
     def __call__(self, student_answer: str) -> Dict[str, Any]:
         """Allow checker to be called as a function."""
@@ -299,7 +345,13 @@ class VectorAnswerChecker(AnswerChecker):
     Answer checker for Vector objects.
 
     Compares vectors component-wise with tolerance or uses custom checker.
+    Pydantic-based with field extraction from options.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    custom_checker: Optional[Callable] = Field(default=None, description="Custom checker function for vectors")
+    tolerance: float = Field(default=0.001, gt=0, description="Tolerance for vector component comparison")
 
     def __init__(self, correct_value, **options):
         """
@@ -309,11 +361,16 @@ class VectorAnswerChecker(AnswerChecker):
             correct_value: The correct Vector
             **options: Checker options (tolerance, tolType, checker)
         """
-        super().__init__(correct_value, **options)
-        # Custom checker function (if provided)
-        self.custom_checker = options.get('checker', None)
-        # Get tolerance from options (stub - not fully implemented)
-        self.tolerance = options.get('tolerance', 0.001)
+        # Extract custom_checker and tolerance from options
+        custom_checker = options.pop('checker', None)
+        tolerance = options.pop('tolerance', None)
+
+        super().__init__(
+            correct_value=correct_value,
+            options=options,
+            custom_checker=custom_checker,
+            tolerance=tolerance or 0.001
+        )
 
     def __call__(self, student_answer: str) -> Dict[str, Any]:
         """Allow checker to be called as a function."""

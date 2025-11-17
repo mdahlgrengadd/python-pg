@@ -10,17 +10,22 @@ Reference: lib/AnswerHash.pm grading methods (lines 400-500)
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .answer_hash import AnswerResult
 
 
-class Grader(ABC):
+class Grader(BaseModel, ABC):
     """
     Abstract base class for problem graders.
 
-    Graders take a list of AnswerResults (one per answer blank)
+    Pydantic-based graders take a list of AnswerResults (one per answer blank)
     and compute an overall problem score.
     """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
 
     @abstractmethod
     def grade(self, answers: list[AnswerResult]) -> float:
@@ -68,9 +73,26 @@ class AverageGrader(Grader):
 
     Problem score is the average of individual answer scores.
     This allows partial credit for getting some answers right.
+    Pydantic-based with weights validation.
     """
 
-    def __init__(self, weights: list[float] | None = None):
+    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=True)
+
+    weights: Optional[list[float]] = Field(
+        default=None,
+        description="Optional weights for each answer (must sum to 1.0)"
+    )
+
+    @field_validator('weights')
+    @classmethod
+    def validate_weights(cls, v: Optional[list[float]]) -> Optional[list[float]]:
+        """Validate that weights are positive and will be checked in grade()."""
+        if v is not None:
+            if not all(w >= 0 for w in v):
+                raise ValueError("All weights must be non-negative")
+        return v
+
+    def __init__(self, weights: Optional[list[float]] = None, **kwargs):
         """
         Initialize average grader.
 
@@ -78,7 +100,7 @@ class AverageGrader(Grader):
             weights: Optional weights for each answer (must sum to 1.0)
                     If None, all answers weighted equally
         """
-        self.weights = weights
+        super().__init__(weights=weights, **kwargs)
 
     def grade(self, answers: list[AnswerResult]) -> float:
         """
