@@ -47,15 +47,7 @@ from pathlib import Path
 import re
 from typing import List, Tuple, Dict, Optional, Any
 
-# Import modular components
-from .pg_grammar import get_pg_grammar
-from .pg_transformer import create_pg_transformer
-from .pg_block_extractor import PGBlockExtractor
-from .pg_text_processor import PGTextProcessor
-from .pg_pygments_rewriter import PGPygmentsRewriter
-from .pg_ir_emitter import PGIREmitter
-
-# Import Pygments for token aware rewriting (kept for backward compatibility)
+# Import Pygments for token aware rewriting
 from pygments.lexers import get_lexer_by_name
 from pygments.token import Token
 
@@ -138,17 +130,10 @@ class PGPreprocessor:
     }
 
     def __init__(self) -> None:
-        # Initialize modular components
-        self._text_processor = PGTextProcessor()
-        self._block_extractor = PGBlockExtractor()
-        self._pygments_rewriter = PGPygmentsRewriter()
-
-        # Initialise Pygments lexer once (kept for backward compatibility in some methods)
+        # Initialise Pygments lexer once
         self._perl_lexer = get_lexer_by_name("perl")
-
         # Closure counter for generating unique function names
         self._closure_counter = 0
-
         # Attempt to prepare the Lark parser.  In restricted
         # environments where Lark is unavailable, the parser will be
         # left as None and the preprocessor will rely on manual
@@ -161,19 +146,16 @@ class PGPreprocessor:
             # here.  We still enable propagate_positions so that line
             # mapping works when we lower expressions via Lark.
             self._parser = Lark(
-                get_pg_grammar(),  # Use the extracted grammar
+                self._grammar(),
                 start="start",
                 parser="earley",
                 maybe_placeholders=True,
                 propagate_positions=True,
             )
-            self._transformer = create_pg_transformer()  # Use the extracted transformer
-            # Initialize IR emitter with pygments rewriter for fallback
-            self._ir_emitter = PGIREmitter(self._pygments_rewriter)
+            self._transformer = self._make_transformer()
         else:
             self._parser = None
             self._transformer = None
-            self._ir_emitter = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -192,11 +174,11 @@ class PGPreprocessor:
             PreprocessResult with transformed code and metadata
         """
         # Convert Perl heredocs (<<END_MARKER) to Python syntax BEFORE splitting into lines
-        pg_source = self._text_processor.convert_heredocs_global(pg_source)
+        pg_source = self._convert_heredocs_global(pg_source)
 
         # Fix reference dereference arrows before parsing
         # $x->[$i] -> $x[i], $x->{key} -> $x[key]
-        pg_source = self._text_processor.fix_reference_dereferences(pg_source)
+        pg_source = self._fix_reference_dereferences(pg_source)
 
         # Note: Don't convert ->with( early! The Lark grammar treats . as a binary operator,
         # so if we convert ->with( to .with_params(, Lark will parse it as string concatenation.
@@ -274,7 +256,7 @@ class PGPreprocessor:
                             break
 
                         should_join = False
-                        stripped_no_comment = self._text_processor.strip_inline_comment(
+                        stripped_no_comment = self._strip_inline_comment(
                             stripped)
                         # Don't join if the line ends with a semicolon (complete statement)
                         if stripped_no_comment and stripped_no_comment[-1] == ';':
@@ -318,7 +300,7 @@ class PGPreprocessor:
                                     should_join = True
 
                         if not should_join:
-                            check_line = self._text_processor.strip_inline_comment(stripped)
+                            check_line = self._strip_inline_comment(stripped)
                             # Account for $# operator which shouldn't affect paren counting
                             # Replace $#name with a placeholder
                             check_line_adjusted = re.sub(
@@ -337,7 +319,7 @@ class PGPreprocessor:
                                 should_join = True
 
                         if should_join and next_line.strip():
-                            line_without_comment = self._text_processor.strip_inline_comment(
+                            line_without_comment = self._strip_inline_comment(
                                 original_line.rstrip()
                             )
                             original_line = (
@@ -864,10 +846,10 @@ class PGPreprocessor:
                     text_blocks.append((block_type, block_content))
                     # PGML blocks require evaluator transformation before storing
                     if "PGML" in block_type:
-                        transformed_pgml = self._block_extractor.transform_pgml_evaluators(
+                        transformed_pgml = self._transform_pgml_evaluators(
                             block_content)
                         block_var = f"PGML_BLOCK_{len(text_blocks) - 1}"
-                        escaped_content = self._block_extractor.escape_triple_quotes(
+                        escaped_content = self._escape_triple_quotes(
                             transformed_pgml)
                         output_lines.append(
                             f"{block_var} = '''\n{escaped_content}\n'''")
@@ -887,7 +869,7 @@ class PGPreprocessor:
                         output_lines.append(escaped_content)
                         output_lines.append("'''")
                     else:
-                        transformed_content = self._text_processor.transform_text_block(
+                        transformed_content = self._transform_text_block(
                             block_content)
                         if "SOLUTION" in block_type:
                             output_lines.append(
@@ -2672,7 +2654,9 @@ if __name__ == "__main__":
 
     def _desigil(self, name: str) -> str:
         """Remove leading sigil characters from Perl variable names."""
-        return self._pygments_rewriter.desigil(name)
+        if name and name[0] in "$@%":
+            return name[1:]
+        return name
 
     def _convert_regexes(self, code: str) -> str:
         """Convert Perl qr/pattern/flags regexes to Python re.compile() calls."""
@@ -2703,7 +2687,665 @@ if __name__ == "__main__":
 
     def _rewrite_with_pygments(self, code: str) -> str:
         """Fallback rewrite using Pygments for conservative token replacement."""
-        return self._pygments_rewriter.rewrite_with_pygments(code)
+        # First, replace qr/pattern/flags with re.compile(pattern, flags)
+        import re as re_module
+        code = self._convert_regexes(code)
+
+        tokens = list(self._perl_lexer.get_tokens_unprocessed(code))
+
+        result: List[str] = []
+        i = 0
+        # Track brace context: True if in hash literal, False if in code block
+        brace_context_stack: List[bool] = []
+        # Track bracket context: nesting level of [...]
+        bracket_depth = 0
+
+        while i < len(tokens):
+            _, ttype, text = tokens[i]
+            # Preserve comments verbatim
+            if ttype in Token.Comment:
+                result.append(text)
+                i += 1
+                continue
+            # Quote bare words before => in hash literals
+            if ttype in Token.Name and brace_context_stack and brace_context_stack[-1]:
+                # We're inside a hash literal, look ahead to see if next non-whitespace token is =>
+                j = i + 1
+                while j < len(tokens) and tokens[j][1] in Token.Text.Whitespace:
+                    j += 1
+                if j < len(tokens):
+                    next_token = tokens[j]
+                    # Check if it's => (either as two tokens = > or single =>)
+                    is_fat_comma = False
+                    if next_token[2] == '=>':
+                        is_fat_comma = True
+                    elif next_token[2] == '=' and j + 1 < len(tokens) and tokens[j + 1][2] == '>':
+                        is_fat_comma = True
+
+                    if is_fat_comma:
+                        # Quote the bare word
+                        result.append(f"'{text}'")
+                        i += 1
+                        continue
+            # Handle false-positive regex tokens BEFORE string check (Regex is subclass of String)
+            # Pygments misidentifies / division as regex
+            if ttype in Token.Literal.String.Regex:
+                # If it starts/ends with / and contains $variables, it might be division operators
+                # Example: "/ 2, $b + $r * sqrt(2) /" is actually division, not regex
+                if text.startswith('/') and text.endswith('/') and '$' in text:
+                    # Strip the / delimiters and process as normal code
+                    import re
+                    content = text[1:-1] if len(text) > 2 else text
+                    # Remove sigils from variables
+                    converted = re.sub(
+                        r'\$([a-zA-Z_][a-zA-Z0-9_]*)', r'\1', content)
+                    # Re-add the / as division operators
+                    result.append('/' + converted + '/')
+                else:
+                    result.append(text)
+                i += 1
+                continue
+            # Handle qr/pattern/flags regex literals
+            if text.startswith('qr/') and '/' in text[3:]:
+                # Find the closing / and extract pattern and flags
+                import re as re_module
+                match = re_module.match(r'qr/([^/]*)/([imsxo]*)', text)
+                if match:
+                    pattern = match.group(1)
+                    flags_str = match.group(2)
+                    # Convert Perl regex flags to Python re flags
+                    flag_map = {
+                        'i': 're.IGNORECASE',
+                        'm': 're.MULTILINE',
+                        's': 're.DOTALL',
+                        'x': 're.VERBOSE',
+                    }
+                    py_flags = ' | '.join(flag_map.get(f, '')
+                                          for f in flags_str if f in flag_map)
+                    if py_flags:
+                        result.append(f're.compile(r"{pattern}", {py_flags})')
+                    else:
+                        result.append(f're.compile(r"{pattern}")')
+                else:
+                    result.append(text)
+                i += 1
+                continue
+            # String interpolation: convert Perl "$var" to Python f"{var}"
+            if ttype in Token.Literal.String:
+                # Only process double-quoted strings (Perl interpolates these)
+                if text.startswith('"') and '$' in text:
+                    # Extract content without quotes
+                    content = text[1:-1] if len(text) >= 2 else text
+                    # Escape backslashes first (before processing braces)
+                    # This handles LaTeX sequences like \( \) \Big etc.
+                    escaped = content.replace('\\', '\\\\')
+                    # Escape literal braces for f-strings
+                    escaped = escaped.replace('{', '{{').replace('}', '}}')
+                    # Convert $var to {var}
+                    import re
+                    converted = re.sub(
+                        r'\$([a-zA-Z_][a-zA-Z0-9_]*)', r'{\1}', escaped)
+                    result.append(f'f"{converted}"')
+                else:
+                    # For non-interpolated strings, escape backslashes
+                    # This handles LaTeX in single-quoted strings
+                    if '\\' in text and not text.startswith('r"') and not text.startswith("r'"):
+                        # Extract quotes and content
+                        if len(text) >= 2:
+                            quote_char = text[0]
+                            content = text[1:-1]
+                            escaped_content = content.replace('\\', '\\\\')
+                            result.append(
+                                f'{quote_char}{escaped_content}{quote_char}')
+                        else:
+                            result.append(text)
+                    else:
+                        result.append(text)
+                i += 1
+                continue
+            # Variables: handle $# array last index operator specially, then remove sigil
+            if ttype in Token.Name.Variable:
+                if text == '$#':
+                    # $# followed by array name -> len(array_name) - 1
+                    # Look ahead for the array name
+                    j = i + 1
+                    while j < len(tokens) and tokens[j][1] in Token.Text.Whitespace:
+                        j += 1
+                    if j < len(tokens) and tokens[j][1] in Token.Name.Variable:
+                        array_token = tokens[j][2]
+                        array_name = self._desigil(array_token)
+                        result.append(f"len({array_name}) - 1")
+                        i = j + 1  # Skip past the array name
+                        continue
+                    else:
+                        # No array name following, just replace $# with an underscore to avoid syntax error
+                        result.append("_")
+                        i += 1
+                        continue
+                elif text.startswith('$#'):
+                    # $#array_name (shouldn't happen with current Pygments, but handle it)
+                    array_name = text[2:]
+                    result.append(f"len({array_name}) - 1")
+                    i += 1
+                    continue
+                else:
+                    result.append(self._desigil(text))
+                    i += 1
+                    continue
+            # Namespace tokens: convert :: to .
+            if ttype in Token.Name.Namespace:
+                # Pygments returns 'parser::Assignment' as a single token
+                # Convert :: to .
+                converted = text.replace('::', '.')
+                result.append(converted)
+                i += 1
+                continue
+            # Hash access: $h{key} -> h['key']
+            # Also handle chained subscripts: Context()->{error}{msg} -> Context()['error']['msg']
+            if text == '{' and i > 0:
+                prev_token = tokens[i-1]
+                # Handle if previous token is a variable, closing paren, closing brace, or >
+                # (> indicates we just processed -> which was converted to .)
+                if (prev_token[1] in Token.Name.Variable or
+                    prev_token[2] == ')' or
+                    prev_token[2] == '}' or
+                        prev_token[2] == '>'):
+                    # gather until closing brace
+                    inner: List[str] = []
+                    depth = 1
+                    j = i + 1
+                    while j < len(tokens) and depth > 0:
+                        _, t2, s2 = tokens[j]
+                        if s2 == '{':
+                            depth += 1
+                        elif s2 == '}':
+                            depth -= 1
+                            if depth == 0:
+                                break
+                        inner.append(s2)
+                        j += 1
+                    inner_text = ''.join(inner).strip()
+                    # quote bare words if not already quoted
+                    if inner_text and inner_text[0] not in "'\"":
+                        inner_text = f"'{inner_text}'"
+                    result.append('[' + inner_text + ']')
+                    i = j + 1
+                    continue
+            # Combine operator pairs into single tokens for arrows, namespace
+            # separators and fat comma.  Pygments splits '->' into two
+            # separate Operator tokens '-' and '>' and likewise '=' and '>'
+            # for '=>', and ':' and ':' for '::'.  Detect these pairs
+            # here.
+            if ttype in Token.Operator or ttype in Token.Punctuation:
+                # Handle method arrow '->'
+                if text == '-' and i + 1 < len(tokens) and tokens[i+1][2] == '>':
+                    i += 2
+                    # Skip any empty tokens after ->
+                    while i < len(tokens) and tokens[i][2] == '':
+                        i += 1
+                    # Check what comes after ->
+                    if i < len(tokens):
+                        next_idx, next_ttype, next_text = tokens[i]
+                        # If next token is {, it's a hash subscript - don't append . (let [ handle it)
+                        if next_text == '{':
+                            # Don't append anything, let the hash subscript code handle {
+                            continue
+                        # Otherwise append . for method/property access
+                        result.append('.')
+                        # If it's a method/property name
+                        if next_ttype in Token.Name or next_ttype == Token.Operator.Word:
+                            # Look ahead to see what follows (skip empty tokens)
+                            j = i + 1
+                            while j < len(tokens) and tokens[j][2] == '':
+                                j += 1
+                            has_parens = False
+                            has_arrow = False
+                            has_brace = False
+                            if j < len(tokens):
+                                lookahead_idx, lookahead_ttype, lookahead_text = tokens[j]
+                                if lookahead_text == '(':
+                                    has_parens = True
+                                elif lookahead_text == '-' and j + 1 < len(tokens) and tokens[j + 1][2] == '>':
+                                    has_arrow = True  # Another -> follows, so this is property access
+                                elif lookahead_text == '{':
+                                    has_brace = True  # Hash subscript follows
+                            # Always append the method/property name
+                            result.append(next_text)
+                            # Known properties that shouldn't have parentheses (from MathObject/Matrix/Vector)
+                            property_names = {
+                                "transpose", "inverse", "norm", "dimensions", "trace", "det", "determinant", "reduce", "value"}
+                            # Only add () if no parens AND no arrow AND no brace (i.e., final method in chain)
+                            # AND it's not a known property
+                            if not has_parens and not has_arrow and not has_brace and next_text not in property_names:
+                                result.append('()')
+                            i += 1
+                            continue
+                    else:
+                        # Nothing after ->, just append .
+                        result.append('.')
+                    continue
+                # Handle namespace separator '::'
+                if text == ':' and i + 1 < len(tokens) and tokens[i+1][2] == ':':
+                    result.append('.')
+                    i += 2
+                    continue
+                # Handle fat comma '=>'
+                if text == '=' and i + 1 < len(tokens) and tokens[i+1][2] == '>':
+                    # Inside hash literal, treat as dict colon
+                    if brace_context_stack and brace_context_stack[-1]:
+                        result.append(': ')
+                    # Inside bracket (list) context, quote the key and use comma
+                    elif bracket_depth > 0:
+                        # Need to quote the previous bareword if it exists
+                        # Look back to find it
+                        j = len(result) - 1
+                        while j >= 0 and result[j].strip() == '':
+                            j -= 1
+                        if j >= 0:
+                            # Check if previous token looks like a bareword
+                            prev = result[j].strip()
+                            if prev and prev.isidentifier() and prev not in ('True', 'False', 'None'):
+                                # Replace it with quoted version
+                                result[j] = f'"{prev}"'
+                        result.append(', ')
+                    else:
+                        # Check if previous token is ] or ) - then it's a pair separator
+                        j = len(result) - 1
+                        while j >= 0 and result[j].strip() == '':
+                            j -= 1
+                        if j >= 0 and result[j].strip() in (']', ')'):
+                            # It's separating elements, use comma
+                            result.append(', ')
+                        else:
+                            # Otherwise it's an assignment
+                            result.append(' = ')
+                    i += 2
+                    continue
+                # Handle Perl string concatenation operator '.'
+                # In Perl: "str" . "ing" concatenates strings
+                # In Python: "str" + "ing"
+                # We need to distinguish from method access: obj.method()
+                if text == '.':
+                    # Check if this is string concatenation (binary operator) or method access
+                    # Look at previous and next tokens to determine context
+                    is_concat = False
+                    if i > 0 and i + 1 < len(tokens):
+                        # Skip whitespace and empty tokens before
+                        j = i - 1
+                        while j >= 0 and (tokens[j][1] in Token.Text.Whitespace or tokens[j][2] == ''):
+                            j -= 1
+                        # Skip whitespace and empty tokens after
+                        k = i + 1
+                        while k < len(tokens) and (tokens[k][1] in Token.Text.Whitespace or tokens[k][2] == ''):
+                            k += 1
+
+                        if j >= 0 and k < len(tokens):
+                            prev_text = tokens[j][2]
+                            prev_ttype = tokens[j][1]
+                            next_text = tokens[k][2]
+                            next_ttype = tokens[k][1]
+
+                            # Special case: .with_params( is a method call, never concatenation
+                            if next_text == 'with_params':
+                                is_concat = False
+                            else:
+                                # It's concatenation if there's whitespace around the dot
+                                # In Perl: "str" . "ing" has spaces
+                                # In Perl: obj.method() has no spaces
+                                # Check if preceded by string, closing paren, or ends with expression
+                                is_expr_before = (
+                                    prev_ttype in Token.Literal.String or
+                                    prev_text == ')' or
+                                    prev_text == ']' or
+                                    prev_ttype in Token.Literal.Number
+                                )
+                                # Check if followed by string, function call, or expression
+                                is_expr_after = (
+                                    next_ttype in Token.Literal.String or
+                                    next_ttype in Token.Literal.Number or
+                                    next_ttype in Token.Name  # Function call like ans_rule()
+                                )
+                                # It's concatenation if both sides look like expressions
+                                # and we have whitespace (i != j+1 or k != i+1)
+                                if is_expr_before and is_expr_after:
+                                    # Check for whitespace
+                                    has_space_before = (j < i - 1)
+                                    has_space_after = (k > i + 1)
+                                    if has_space_before or has_space_after:
+                                        is_concat = True
+
+                    if is_concat:
+                        result.append(' + ')
+                        i += 1
+                        continue
+            # Fat comma '=>' collapsed as a single text (rare)
+            if text == '=>':
+                # Inside hash literal, treat as dict colon
+                if brace_context_stack and brace_context_stack[-1]:
+                    result.append(': ')
+                # Inside bracket (list) context, quote the key and use comma
+                elif bracket_depth > 0:
+                    # Need to quote the previous bareword if it exists
+                    j = len(result) - 1
+                    while j >= 0 and result[j].strip() == '':
+                        j -= 1
+                    if j >= 0:
+                        prev = result[j].strip()
+                        if prev and prev.isidentifier() and prev not in ('True', 'False', 'None'):
+                            result[j] = f'"{prev}"'
+                    result.append(', ')
+                else:
+                    # Check if previous token is ] or ) - then it's a pair separator
+                    j = len(result) - 1
+                    while j >= 0 and result[j].strip() == '':
+                        j -= 1
+                    if j >= 0 and result[j].strip() in (']', ')'):
+                        result.append(', ')
+                    else:
+                        result.append(' = ')
+                i += 1
+                continue
+            # Track bracket context for list literals
+            if text == '[':
+                bracket_depth += 1
+            elif text == ']':
+                bracket_depth = max(0, bracket_depth - 1)
+
+            # Track brace context for hash literal detection
+            if text == '{':
+                # Determine if this is a hash literal or code block
+                # Hash literals typically follow: =>, (, [, ,, or start of line
+                is_hash_literal = False
+                if i > 0:
+                    # Look back for previous non-whitespace token
+                    j = i - 1
+                    while j >= 0 and tokens[j][1] in Token.Text.Whitespace:
+                        j -= 1
+                    if j >= 0:
+                        prev_token = tokens[j][2]
+                        # Hash literal indicators
+                        if prev_token in ('=>', '>', '(', '[', ',', '='):
+                            is_hash_literal = True
+                else:
+                    # At start, assume hash literal
+                    is_hash_literal = True
+                brace_context_stack.append(is_hash_literal)
+            elif text == '}':
+                if brace_context_stack:
+                    brace_context_stack.pop()
+            # Drop trailing semicolon at end
+            if text == ';' and i == len(tokens) - 1:
+                i += 1
+                continue
+            result.append(text)
+            i += 1
+
+        rewritten = ''.join(result).rstrip()
+
+        # Post-processing: Apply additional transformations
+        import re
+
+        # Convert .with( to .with_params( to avoid Python 'with' keyword
+        # At this point, -> has already been converted to . by IR emission
+        # This must happen AFTER binary expr emission because . is treated as binary operator
+        rewritten = re.sub(r'\.with\(', '.with_params(', rewritten)
+
+        # Convert .reduce() to .reduce (property, not method in Python MathObjects)
+        # In Perl: ->reduce() and ->reduce are equivalent
+        # In Python: reduce is a @property, so calling it with () fails
+        rewritten = re.sub(r'\.reduce\(\)', '.reduce', rewritten)
+
+        # Convert Perl range operator .. to Python range()
+        # This is tricky because .. can appear in various contexts: (a..b), [ a..b ], a..b
+        # The Lark parser handles most cases, but fallback is needed for complex expressions
+        # Strategy: Convert all .. operators to range, then simplify any redundant arithmetic
+
+        # First: Convert all range operators. These patterns handle the most common cases.
+        # Pattern: token .. token where tokens are: numbers, variables, len() expressions
+
+        # Handle: 0 .. len(array) - 1
+        rewritten = re.sub(
+            r'(\d+)\s*\.\.\s*(len\([^)]*\)\s*-\s*1)',
+            r'range(\1, \2 + 1)',
+            rewritten
+        )
+
+        # Handle: len(array) - 1 .. number
+        rewritten = re.sub(
+            r'(len\([^)]*\)\s*-\s*1)\s*\.\.\s*(\d+)',
+            r'range(\1, \2 + 1)',
+            rewritten
+        )
+
+        # Handle: number .. number
+        rewritten = re.sub(
+            r'(\d+)\s*\.\.\s*(\d+)',
+            r'range(\1, \2 + 1)',
+            rewritten
+        )
+
+        # Handle: $#array .. number or number .. $#array
+        rewritten = re.sub(
+            r'(\$?#[a-zA-Z_]\w*)\s*\.\.\s*(\d+)',
+            r'range(\1, \2 + 1)',
+            rewritten
+        )
+        rewritten = re.sub(
+            r'(\d+)\s*\.\.\s*(\$?#[a-zA-Z_]\w*)',
+            r'range(\1, \2 + 1)',
+            rewritten
+        )
+
+        # Handle: $#array .. $#array2 or similar
+        rewritten = re.sub(
+            r'(\$?#[a-zA-Z_]\w*)\s*\.\.\s*(\$?#[a-zA-Z_]\w*)',
+            r'range(\1, \2 + 1)',
+            rewritten
+        )
+
+        # Second: Simplify redundant arithmetic in range() calls
+        # When we have range(X, Y - 1 + 1), simplify to range(X, Y)
+        rewritten = re.sub(
+            r'range\(([^,]+),\s*(len\([^)]*\))\s*-\s*1\s*\+\s*1\)',
+            r'range(\1, \2)',
+            rewritten
+        )
+
+        # Handle: range(X, expr - N + N) -> range(X, expr) for any constant N
+        # This catches cases like: range(0, len(array) - 1 + 1)
+        def simplify_range_arithmetic(match):
+            """Simplify range() calls with canceling arithmetic."""
+            prefix = match.group(1)
+            end_expr = match.group(2)
+
+            # Check if end_expr is like "... - N + N" where N is the same number
+            # Extract the subtracted and added numbers
+            subtract_match = re.search(r'-\s*(\d+)\s*\+\s*(\d+)$', end_expr)
+            if subtract_match:
+                sub_num = subtract_match.group(1)
+                add_num = subtract_match.group(2)
+                if sub_num == add_num:
+                    # Remove the " - N + N" part
+                    simplified = re.sub(r'\s*-\s*' + re.escape(sub_num) +
+                                        r'\s*\+\s*' + re.escape(add_num) + r'$', '', end_expr)
+                    return f"range({prefix}, {simplified})"
+
+            return match.group(0)
+
+        rewritten = re.sub(
+            r'range\(([^,]+),\s*([^)]*-\s*\d+\s*\+\s*\d+)\)',
+            simplify_range_arithmetic,
+            rewritten
+        )
+
+        # Convert Perl string repetition operator 'x' to Python '*'
+        # Pattern: (string/variable) x (number) or (variable) x (variable)
+        # Be careful not to convert 'x' when it's a variable name or part of identifiers
+        rewritten = re.sub(r'(["\'\)])\s+x\s+(\d+)', r'\1 * \2', rewritten)
+        rewritten = re.sub(
+            r'(\b[a-zA-Z_]\w*)\s+x\s+(\d+)', r'\1 * \2', rewritten)
+        # Also handle variable x variable (e.g., v3 x v4 for cross product)
+        rewritten = re.sub(
+            r'(\b[a-zA-Z_]\w*)\s+x\s+([a-zA-Z_]\w*\b)', r'\1 * \2', rewritten)
+
+        # Condense spaces around equals from fat comma conversion
+        rewritten = re.sub(r'\s+=\s+', ' = ', rewritten)
+
+        # Convert string comparison operators
+        # Be careful: these are only operators when surrounded by expressions/values,
+        # not variable names. Look for operators preceded/followed by closing parens,
+        # numbers, closing brackets, or the words 'not', 'and', 'or'
+        # Pattern: (expression) OPERATOR (expression)
+        rewritten = re.sub(r'([)\]\w])\s+eq\s+', r'\1 == ', rewritten)
+        rewritten = re.sub(r'([)\]\w])\s+ne\s+', r'\1 != ', rewritten)
+        rewritten = re.sub(r'([)\]\w])\s+lt\s+', r'\1 < ', rewritten)
+        rewritten = re.sub(r'([)\]\w])\s+gt\s+', r'\1 > ', rewritten)
+        rewritten = re.sub(r'([)\]\w])\s+le\s+', r'\1 <= ', rewritten)
+        rewritten = re.sub(r'([)\]\w])\s+ge\s+', r'\1 >= ', rewritten)
+
+        # Convert ternary operator: cond ? true : false  -->  true if cond else false
+        # This is complex because ternaries can appear in various contexts.
+        # The key insight: We need to find ternaries at the RIGHT nesting level.
+        # For example: `foo(bar, x > 0 ? 1 : 2)` should convert the ternary INSIDE the call.
+        def convert_ternaries(text: str) -> str:
+            """Recursively convert ternary operators, handling nesting correctly."""
+            if '?' not in text or ':' not in text:
+                return text
+
+            # Find all ? positions and their matching : at the same paren/bracket depth
+            depth = 0
+            ternary_positions = []  # List of (question_pos, colon_pos) tuples
+
+            i = 0
+            while i < len(text):
+                ch = text[i]
+                if ch in '([{':
+                    depth += 1
+                elif ch in ')]}':
+                    depth -= 1
+                elif ch == '?' and depth >= 0:
+                    # Found a ?, now find its matching :
+                    question_depth = depth
+                    j = i + 1
+                    local_depth = depth
+                    while j < len(text):
+                        if text[j] in '([{':
+                            local_depth += 1
+                        elif text[j] in ')]}':
+                            local_depth -= 1
+                        elif text[j] == ':' and local_depth == question_depth:
+                            ternary_positions.append((i, j))
+                            break
+                        j += 1
+                i += 1
+
+            # Process ternaries from innermost (rightmost) to outermost
+            # This handles nested ternaries correctly
+            for question_pos, colon_pos in reversed(ternary_positions):
+                # Extract the parts
+                # Need to find where this ternary starts (the condition)
+                # Work backwards from ? to find the start of the condition
+                # The condition starts after the previous operator or delimiter
+
+                # Find the start of the condition by working backwards
+                cond_start = 0
+                depth = 0
+                for k in range(question_pos - 1, -1, -1):
+                    if text[k] in ')]}':
+                        depth += 1
+                    elif text[k] in '([{':
+                        depth -= 1
+                        if depth < 0:
+                            # Hit an unmatched opening bracket
+                            cond_start = k + 1
+                            break
+                    elif depth == 0 and text[k] in ',;=(':
+                        # Hit a delimiter at depth 0
+                        cond_start = k + 1
+                        break
+
+                # Find the end of the false value
+                # Work forward from : to find where it ends
+                false_end = len(text)
+                depth = 0
+                for k in range(colon_pos + 1, len(text)):
+                    if text[k] in '([{':
+                        depth += 1
+                    elif text[k] in ')]}':
+                        depth -= 1
+                        if depth < 0:
+                            # Hit an unmatched closing bracket
+                            false_end = k
+                            break
+                    elif depth == 0 and text[k] in ',;)':
+                        # Hit a delimiter at depth 0
+                        false_end = k
+                        break
+
+                cond = text[cond_start:question_pos].strip()
+                true_val = text[question_pos + 1:colon_pos].strip()
+                false_val = text[colon_pos + 1:false_end].strip()
+
+                # Build the replacement
+                replacement = f"{true_val} if ({cond}) else {false_val}"
+
+                # Replace in the text
+                text = text[:cond_start] + replacement + text[false_end:]
+
+                # Only process one ternary at a time, then restart
+                # (because positions change after replacement)
+                if len(ternary_positions) > 1:
+                    return convert_ternaries(text)
+
+            return text
+
+        if '?' in rewritten and ':' in rewritten:
+            rewritten = convert_ternaries(rewritten)
+
+        # Convert logical operators
+        rewritten = rewritten.replace('||', ' or ')
+        rewritten = rewritten.replace('&&', ' and ')
+
+        # Convert Perl $#array (last index) to len(array)-1
+        rewritten = re.sub(r'\$\#\$([a-zA-Z_]\w*)', r'len(\1)-1', rewritten)
+        rewritten = re.sub(r'\$\#([a-zA-Z_]\w*)', r'len(\1)-1', rewritten)
+
+        # Convert Perl reference operator ~~& to just the function name
+        rewritten = re.sub(r'~~&([a-zA-Z_]\w*)', r'\1', rewritten)
+        rewritten = re.sub(r'~~([a-zA-Z_]\w*)', r'\1', rewritten)
+
+        # Special case: Wrap CapitalizedWord(...) = "string" patterns in parens for tuple pairs
+        # This happens with AnswerHints( Formula(...) => "msg", ... )
+        rewritten = re.sub(
+            r'(?<![a-z])([A-Z][a-zA-Z0-9_]*\([^)]*\))\s*=\s*("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\')',
+            r'(\1, \2)',
+            rewritten,
+        )
+
+        # string literal = value (legacy keyword style) → positional args
+        rewritten = re.sub(
+            r'"([^"]*?)"\s*=\s*(["\'][^"\']*["\'])',
+            r'"\1", \2',
+            rewritten,
+        )
+        rewritten = re.sub(
+            r"'([^']*?)'\s*=\s*([\"'][^\"']*[\"'])",
+            r"'\1', \2",
+            rewritten,
+        )
+
+        # Context().functions.add(name => { ... }) expects positional string key
+        rewritten = re.sub(
+            r'(\.add\(\s*)([a-z_][a-zA-Z0-9_]*)\s*=\s*\{',
+            r"\1'\2', {",
+            rewritten,
+        )
+
+        return rewritten
+
+    # ------------------------------------------------------------------
+    # Structured rewriting helpers
+    # ------------------------------------------------------------------
 
     def _try_rewrite_for_loop(
         self, lines: List[str], start_index: int
@@ -3079,7 +3721,10 @@ if __name__ == "__main__":
 
     def _escape_triple_quotes(self, text: str) -> str:
         """Escape special characters in text for Python triple quoted string literals."""
-        return self._block_extractor.escape_triple_quotes(text)
+        text = text.replace("\\", "\\\\")
+        text = text.replace("'''", "\'\'\'")
+        text = text.replace('"""', '\"\"\"')
+        return text
 
     def _strip_inline_comment(self, line: str) -> str:
         """
