@@ -1,0 +1,40 @@
+## DESCRIPTION
+## Simple algebra problem with formula answer
+## ENDDESCRIPTION
+
+DOCUMENT();
+loadMacros("PGstandard.pl", "PGML.pl", "MathObjects.pl");
+TEXT(beginproblem());
+
+# Setup
+Context("Numeric");
+$a = random(2, 9, 1);
+$b = random(1, 9, 1);
+$c = $a + $b;
+
+$answer = Formula("$a * x + $b");
+
+# Problem text
+BEGIN_PGML
+## Algebra Problem
+
+Expand the expression: [`[$a](x + \frac{[$b]}{[$a]})`]
+
+[_]{$answer}{20}
+
+---
+*Hint:* Distribute [`[$a]`] across the terms in parentheses.
+END_PGML
+
+# Solution
+BEGIN_PGML_SOLUTION
+## Solution
+
+We distribute [`[$a]`] to both terms:
+
+[``[$a](x + \frac{[$b]}{[$a]}) = [$a] \cdot x + [$a] \cdot \frac{[$b]}{[$a]}} = [$a]x + [$b]``]
+
+So the answer is [`[$answer]`].
+END_PGML_SOLUTION
+
+ENDDOCUMENT();

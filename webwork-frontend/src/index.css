@@ -1,0 +1,116 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* KaTeX CSS */
+@import 'katex/dist/katex.min.css';
+
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light dark;
+  color: rgba(0, 0, 0, 0.87);
+  background-color: #f5f5f5;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+/* Math input styling */
+.math-input {
+  min-height: 40px;
+  font-size: 16px;
+}
+
+/* Problem content styling */
+.problem-content {
+  line-height: 1.8;
+}
+
+.problem-content p {
+  margin-bottom: 1rem;
+}
+
+.problem-content h1,
+.problem-content h2,
+.problem-content h3 {
+  margin-top: 1.5rem;
+  margin-bottom: 0.75rem;
+  font-weight: 600;
+}
+
+.problem-content ul,
+.problem-content ol {
+  margin-left: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.problem-content code {
+  background-color: #f4f4f4;
+  padding: 0.2rem 0.4rem;
+  border-radius: 3px;
+  font-family: 'Courier New', monospace;
+}
+
+.problem-content pre {
+  background-color: #f4f4f4;
+  padding: 1rem;
+  border-radius: 5px;
+  overflow-x: auto;
+  margin-bottom: 1rem;
+}
+
+/* Answer feedback styling */
+.feedback-correct {
+  @apply bg-green-50 border-l-4 border-green-500 p-3 rounded;
+}
+
+.feedback-incorrect {
+  @apply bg-red-50 border-l-4 border-red-500 p-3 rounded;
+}
+
+.feedback-partial {
+  @apply bg-yellow-50 border-l-4 border-yellow-500 p-3 rounded;
+}
+
+/* MathQuill styling adjustments */
+.mq-editable-field {
+  border: 1px solid #d1d5db;
+  padding: 0.5rem;
+  border-radius: 0.375rem;
+  min-height: 2.5rem;
+}
+
+.mq-editable-field.mq-focused {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+}

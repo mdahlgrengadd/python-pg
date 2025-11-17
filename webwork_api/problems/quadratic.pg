@@ -1,0 +1,39 @@
+## DESCRIPTION
+## Quadratic equation solving
+## ENDDESCRIPTION
+
+DOCUMENT();
+loadMacros("PGstandard.pl", "PGML.pl", "MathObjects.pl");
+TEXT(beginproblem());
+
+# Setup
+Context("Numeric");
+$a = random(2, 5, 1);
+$b = random(1, 9, 1);
+$c = $a * $b;
+
+$answer = Real(-$b);
+
+# Problem text
+BEGIN_PGML
+## Solve the Equation
+
+Solve for [`x`]: [`[$a]x + [$c] = 0`]
+
+[`x =`] [_]{$answer}{10}
+
+---
+The equation is linear in [`x`].
+END_PGML
+
+# Solution
+BEGIN_PGML_SOLUTION
+## Solution
+
+Starting with [`[$a]x + [$c] = 0`]:
+
+1. Subtract [`[$c]`] from both sides: [`[$a]x = -[$c]`]
+2. Divide by [`[$a]`]: [`x = \frac{-[$c]}{[$a]} = [$answer]`]
+END_PGML_SOLUTION
+
+ENDDOCUMENT();

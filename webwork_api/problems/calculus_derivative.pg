@@ -1,0 +1,40 @@
+## DESCRIPTION
+## Basic derivative calculation
+## ENDDESCRIPTION
+
+DOCUMENT();
+loadMacros("PGstandard.pl", "PGML.pl", "MathObjects.pl");
+TEXT(beginproblem());
+
+# Setup
+Context("Numeric");
+Context()->variables->add(t => 'Real');
+
+$n = random(2, 6, 1);
+$a = random(2, 9, 1);
+
+$f = Formula("$a * t^$n");
+$answer = $f->D('t');
+
+# Problem text
+BEGIN_PGML
+## Derivative
+
+Find the derivative of [`f(t) = [$f]`] with respect to [`t`].
+
+[`f'(t) =`] [_]{$answer}{20}
+
+---
+Use the power rule: [`\frac{d}{dt}[t^n] = nt^{n-1}`]
+END_PGML
+
+# Solution
+BEGIN_PGML_SOLUTION
+## Solution
+
+Using the power rule:
+
+[``f'(t) = \frac{d}{dt}[[$f]] = [$a] \cdot [$n] \cdot t^{[$n]-1} = [$answer]``]
+END_PGML_SOLUTION
+
+ENDDOCUMENT();
