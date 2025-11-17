@@ -1,0 +1,114 @@
+version: '3.8'
+
+services:
+  # FastAPI Backend
+  api:
+    build:
+      context: .
+      target: development
+    container_name: webwork-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./webwork_api:/app/webwork_api
+      - ./pg:/app/pg
+      - ./webwork_api/problems:/app/problems
+    environment:
+      - DEBUG=true
+      - ENVIRONMENT=development
+      - LOG_LEVEL=DEBUG
+      - DATABASE_URL=postgresql+asyncpg://webwork:webwork@db:5432/webwork
+      - REDIS_URL=redis://cache:6379/0
+      - CACHE_ENABLED=true
+    depends_on:
+      - db
+      - cache
+    networks:
+      - webwork-network
+    restart: unless-stopped
+
+  # PostgreSQL Database (optional)
+  db:
+    image: postgres:15-alpine
+    container_name: webwork-db
+    environment:
+      - POSTGRES_USER=webwork
+      - POSTGRES_PASSWORD=webwork
+      - POSTGRES_DB=webwork
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - webwork-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U webwork"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache (optional)
+  cache:
+    image: redis:7-alpine
+    container_name: webwork-cache
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - webwork-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # React Frontend
+  frontend:
+    build:
+      context: ./webwork-frontend
+      dockerfile: Dockerfile.dev
+    container_name: webwork-frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./webwork-frontend/src:/app/src
+      - ./webwork-frontend/public:/app/public
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - api
+    networks:
+      - webwork-network
+    restart: unless-stopped
+
+  # Nginx Reverse Proxy (optional, for production)
+  nginx:
+    image: nginx:alpine
+    container_name: webwork-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - api
+      - frontend
+    networks:
+      - webwork-network
+    restart: unless-stopped
+    profiles:
+      - production
+
+networks:
+  webwork-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
